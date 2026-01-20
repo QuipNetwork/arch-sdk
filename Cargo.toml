@@ -1,0 +1,32 @@
+[package]
+name = "quip-arch"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Post-quantum secure wallet for ArchVM (Bitcoin)"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# Arch Network program framework - using git for latest fixes
+arch_program = { git = "https://github.com/Arch-Network/arch-program.git" }
+
+# Serialization - version pinned to match arch_program
+borsh = { version = "1.4.0", features = ["derive"] }
+
+# WOTS+ post-quantum signatures (same as quip-anchor)
+hashsigs = { package = "hashsigs-rs", version = "0.0.2" }
+
+# Error handling - compatible with arch_program
+thiserror = "1.0"
+
+# Keccak256 hashing (for WOTS+ and address derivation)
+sha3 = "0.10"
+
+# Hex encoding for debug output
+hex = "0.4"
+
+[features]
+no-entrypoint = []
+debug = []
