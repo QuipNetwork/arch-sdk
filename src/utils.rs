@@ -130,10 +130,7 @@ pub fn verify_opdata_storage_address(
 
 /// Compute Keccak256 hash for WOTS+ signature verification
 fn keccak256_hash(data: &[u8]) -> [u8; 32] {
-    use sha3::{Digest, Keccak256};
-    let mut hasher = Keccak256::new();
-    hasher.update(data);
-    hasher.finalize().into()
+    arch_program::hashing_functions::keccak256(data).0
 }
 
 // =============================================================================

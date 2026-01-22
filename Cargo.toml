@@ -21,9 +21,6 @@ hashsigs = { package = "hashsigs-rs", version = "0.0.2" }
 # Error handling - compatible with arch_program
 thiserror = "1.0"
 
-# Keccak256 hashing (for WOTS+ and address derivation)
-sha3 = "0.10"
-
 # Hex encoding for debug output
 hex = "0.4"
 

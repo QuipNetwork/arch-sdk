@@ -467,7 +467,6 @@ dependencies = [
  "borsh",
  "hashsigs-rs",
  "hex",
- "sha3",
  "thiserror",
 ]
 
