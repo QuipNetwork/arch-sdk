@@ -19,7 +19,7 @@ use arch_program::{
     account::{AccountInfo, AccountMeta},
     instruction::Instruction,
     msg,
-    program::invoke,
+    program::{get_bitcoin_block_height, invoke},
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -165,6 +165,14 @@ fn process_initialize_factory<'a>(
     let _payer_info = next_account_info(account_info_iter)?;
     let _system_program_info = next_account_info(account_info_iter)?;
 
+    // Verify account ownership and permissions
+    if factory_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if !factory_info.is_writable {
+        return Err(QuipError::AccountNotWritable.into());
+    }
+
     // Verify factory account derivation
     crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
@@ -216,6 +224,17 @@ fn process_deposit_to_winternitz<'a>(
     let payer_info = next_account_info(account_info_iter)?;
     let _system_program_info = next_account_info(account_info_iter)?;
 
+    // Verify account ownership and permissions
+    if factory_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if wallet_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if !factory_info.is_writable || !wallet_info.is_writable {
+        return Err(QuipError::AccountNotWritable.into());
+    }
+
     // Verify payer is signer
     if !payer_info.is_signer {
         return Err(QuipError::UnauthorizedSigner.into());
@@ -242,6 +261,11 @@ fn process_deposit_to_winternitz<'a>(
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
 
+    // Verify factory is initialized
+    if !factory.is_initialized {
+        return Err(QuipError::AccountNotInitialized.into());
+    }
+
     // Transfer creation fee from payer to factory
     crate::utils::transfer_value(payer_info, factory_info, factory.creation_fee)?;
 
@@ -256,13 +280,14 @@ fn process_deposit_to_winternitz<'a>(
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
     // Create wallet state
+    let current_block = get_bitcoin_block_height() as i64;
     let wallet = QuipWallet {
         is_initialized: true,
         factory: pubkey_to_bytes(factory_info.key),
         owner: to,
         pq_owner: pq_to,
-        created_at: 0, // TODO: Get current timestamp from ArchVM
-        last_activity: 0,
+        created_at: current_block,
+        last_activity: current_block,
         transaction_count: 0,
         bump: 0,
     };
@@ -300,6 +325,20 @@ fn process_transfer_with_winternitz<'a>(
     let _system_program_info = next_account_info(account_info_iter)?;
     let signature_storage_info = next_account_info(account_info_iter)?;
 
+    // Verify account ownership and permissions
+    if factory_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if wallet_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if signature_storage_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if !factory_info.is_writable || !wallet_info.is_writable {
+        return Err(QuipError::AccountNotWritable.into());
+    }
+
     // Verify payer is signer
     if !payer_info.is_signer {
         return Err(QuipError::UnauthorizedSigner.into());
@@ -318,10 +357,20 @@ fn process_transfer_with_winternitz<'a>(
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
 
+    // Verify factory is initialized
+    if !factory.is_initialized {
+        return Err(QuipError::AccountNotInitialized.into());
+    }
+
     let wallet_data = wallet_info.try_borrow_data()?;
     let mut wallet = QuipWallet::try_from_slice(&wallet_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(wallet_data);
+
+    // Verify wallet is initialized
+    if !wallet.is_initialized {
+        return Err(QuipError::AccountNotInitialized.into());
+    }
 
     let sig_data = signature_storage_info.try_borrow_data()?;
     let signature_storage = SignatureStorage::try_from_slice(&sig_data)
@@ -370,7 +419,7 @@ fn process_transfer_with_winternitz<'a>(
         .transaction_count
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
-    wallet.last_activity = 0; // TODO: Get current timestamp
+    wallet.last_activity = get_bitcoin_block_height() as i64;
 
     // Serialize updated states
     let mut factory_data = factory_info.try_borrow_mut_data()?;
@@ -410,6 +459,23 @@ fn process_execute_with_winternitz<'a>(
     let signature_storage_info = next_account_info(account_info_iter)?;
     let opdata_storage_info = next_account_info(account_info_iter)?;
 
+    // Verify account ownership and permissions
+    if factory_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if wallet_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if signature_storage_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if opdata_storage_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if !factory_info.is_writable || !wallet_info.is_writable {
+        return Err(QuipError::AccountNotWritable.into());
+    }
+
     // Verify payer is signer
     if !payer_info.is_signer {
         return Err(QuipError::UnauthorizedSigner.into());
@@ -429,10 +495,20 @@ fn process_execute_with_winternitz<'a>(
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
 
+    // Verify factory is initialized
+    if !factory.is_initialized {
+        return Err(QuipError::AccountNotInitialized.into());
+    }
+
     let wallet_data = wallet_info.try_borrow_data()?;
     let mut wallet = QuipWallet::try_from_slice(&wallet_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(wallet_data);
+
+    // Verify wallet is initialized
+    if !wallet.is_initialized {
+        return Err(QuipError::AccountNotInitialized.into());
+    }
 
     let sig_data = signature_storage_info.try_borrow_data()?;
     let signature_storage = SignatureStorage::try_from_slice(&sig_data)
@@ -505,7 +581,7 @@ fn process_execute_with_winternitz<'a>(
         .transaction_count
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
-    wallet.last_activity = 0; // TODO: Get current timestamp
+    wallet.last_activity = get_bitcoin_block_height() as i64;
 
     // Serialize updated states
     let mut factory_data = factory_info.try_borrow_mut_data()?;
@@ -562,6 +638,17 @@ fn process_change_pq_owner<'a>(
     let payer_info = next_account_info(account_info_iter)?;
     let signature_storage_info = next_account_info(account_info_iter)?;
 
+    // Verify account ownership and permissions
+    if wallet_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if signature_storage_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if !wallet_info.is_writable {
+        return Err(QuipError::AccountNotWritable.into());
+    }
+
     // Verify payer is signer
     if !payer_info.is_signer {
         return Err(QuipError::UnauthorizedSigner.into());
@@ -578,6 +665,11 @@ fn process_change_pq_owner<'a>(
     let mut wallet = QuipWallet::try_from_slice(&wallet_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(wallet_data);
+
+    // Verify wallet is initialized
+    if !wallet.is_initialized {
+        return Err(QuipError::AccountNotInitialized.into());
+    }
 
     let sig_data = signature_storage_info.try_borrow_data()?;
     let signature_storage = SignatureStorage::try_from_slice(&sig_data)
@@ -607,7 +699,7 @@ fn process_change_pq_owner<'a>(
 
     // Update wallet state
     wallet.pq_owner = pq_next;
-    wallet.last_activity = 0; // TODO: Get current timestamp
+    wallet.last_activity = get_bitcoin_block_height() as i64;
 
     // Serialize updated state
     let mut wallet_data = wallet_info.try_borrow_mut_data()?;
@@ -628,6 +720,14 @@ fn process_store_signature<'a>(
     let signature_storage_info = next_account_info(account_info_iter)?;
     let payer_info = next_account_info(account_info_iter)?;
     let _system_program_info = next_account_info(account_info_iter)?;
+
+    // Verify account ownership and permissions
+    if signature_storage_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if !signature_storage_info.is_writable {
+        return Err(QuipError::AccountNotWritable.into());
+    }
 
     // Verify payer is signer
     if !payer_info.is_signer {
@@ -687,6 +787,14 @@ fn process_store_opdata<'a>(
     let payer_info = next_account_info(account_info_iter)?;
     let _system_program_info = next_account_info(account_info_iter)?;
 
+    // Verify account ownership and permissions
+    if opdata_storage_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if !opdata_storage_info.is_writable {
+        return Err(QuipError::AccountNotWritable.into());
+    }
+
     // Verify payer is signer
     if !payer_info.is_signer {
         return Err(QuipError::UnauthorizedSigner.into());
@@ -742,6 +850,14 @@ fn process_update_fees<'a>(
     let factory_info = next_account_info(account_info_iter)?;
     let admin_info = next_account_info(account_info_iter)?;
 
+    // Verify account ownership and permissions
+    if factory_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if !factory_info.is_writable {
+        return Err(QuipError::AccountNotWritable.into());
+    }
+
     // Verify factory account derivation
     crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
@@ -755,6 +871,11 @@ fn process_update_fees<'a>(
     let mut factory = QuipFactory::try_from_slice(&factory_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
+
+    // Verify factory is initialized
+    if !factory.is_initialized {
+        return Err(QuipError::AccountNotInitialized.into());
+    }
 
     // Verify admin matches
     if pubkey_to_bytes(admin_info.key) != factory.admin {
@@ -790,6 +911,14 @@ fn process_withdraw_fees<'a>(
     let admin_info = next_account_info(account_info_iter)?;
     let recipient_info = next_account_info(account_info_iter)?;
 
+    // Verify account ownership and permissions
+    if factory_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if !factory_info.is_writable {
+        return Err(QuipError::AccountNotWritable.into());
+    }
+
     // Verify factory account derivation
     crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
@@ -803,6 +932,11 @@ fn process_withdraw_fees<'a>(
     let mut factory = QuipFactory::try_from_slice(&factory_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
+
+    // Verify factory is initialized
+    if !factory.is_initialized {
+        return Err(QuipError::AccountNotInitialized.into());
+    }
 
     // Verify admin matches
     if pubkey_to_bytes(admin_info.key) != factory.admin {
@@ -841,6 +975,14 @@ fn process_transfer_ownership<'a>(
     let factory_info = next_account_info(account_info_iter)?;
     let admin_info = next_account_info(account_info_iter)?;
 
+    // Verify account ownership and permissions
+    if factory_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if !factory_info.is_writable {
+        return Err(QuipError::AccountNotWritable.into());
+    }
+
     // Verify factory account derivation
     crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
@@ -854,6 +996,11 @@ fn process_transfer_ownership<'a>(
     let mut factory = QuipFactory::try_from_slice(&factory_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
+
+    // Verify factory is initialized
+    if !factory.is_initialized {
+        return Err(QuipError::AccountNotInitialized.into());
+    }
 
     // Verify admin matches
     if pubkey_to_bytes(admin_info.key) != factory.admin {
