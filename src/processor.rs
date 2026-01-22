@@ -259,8 +259,13 @@ fn process_deposit_to_winternitz<'a>(
         return Err(QuipError::AccountNotInitialized.into());
     }
 
-    // Transfer creation fee from payer to factory
-    crate::utils::transfer_value(payer_info, factory_info, factory.creation_fee)?;
+    // Transfer creation fee from payer (signer) to factory
+    crate::utils::transfer_value_from_signer(payer_info, factory_info, factory.creation_fee)?;
+
+    // Transfer initial deposit from payer (signer) to wallet
+    if initial_deposit > 0 {
+        crate::utils::transfer_value_from_signer(payer_info, wallet_info, initial_deposit)?;
+    }
 
     // Update accumulated fees counter
     factory.accumulated_fees = factory
@@ -397,8 +402,19 @@ fn process_transfer_with_winternitz<'a>(
         return Err(QuipError::InvalidWotsSignature.into());
     }
 
-    // Transfer fee from payer to factory
-    crate::utils::transfer_value(payer_info, factory_info, factory.transfer_fee)?;
+    // Build wallet PDA seeds for signing transfers
+    let wallet_seeds: &[&[u8]] = &[
+        b"wallet",
+        wallet.owner.as_ref(),
+        vault_id.as_ref(),
+        &[wallet.bump],
+    ];
+
+    // Transfer fee from wallet to factory
+    crate::utils::transfer_value(wallet_info, factory_info, factory.transfer_fee, wallet_seeds)?;
+
+    // Transfer the amount from wallet to recipient
+    crate::utils::transfer_value(wallet_info, recipient_info, amount, wallet_seeds)?;
 
     // Update accumulated fees counter
     factory.accumulated_fees = factory
@@ -423,9 +439,6 @@ fn process_transfer_with_winternitz<'a>(
     let mut wallet_data = wallet_info.try_borrow_mut_data()?;
     wallet.serialize(&mut &mut wallet_data[..])
         .map_err(|_| ProgramError::InvalidAccountData)?;
-
-    // Transfer the amount from wallet to recipient
-    crate::utils::transfer_value(wallet_info, recipient_info, amount)?;
 
     msg!(
         "Transfer of {} to {} executed with vault_id: {}",
@@ -559,8 +572,16 @@ fn process_execute_with_winternitz<'a>(
         return Err(QuipError::InvalidWotsSignature.into());
     }
 
-    // Transfer execute fee from payer to factory
-    crate::utils::transfer_value(payer_info, factory_info, factory.execute_fee)?;
+    // Build wallet PDA seeds for signing
+    let wallet_seeds: &[&[u8]] = &[
+        b"wallet",
+        wallet.owner.as_ref(),
+        vault_id.as_ref(),
+        &[wallet.bump],
+    ];
+
+    // Transfer execute fee from wallet to factory
+    crate::utils::transfer_value(wallet_info, factory_info, factory.execute_fee, wallet_seeds)?;
 
     // Update accumulated fees counter
     factory.accumulated_fees = factory
@@ -604,14 +625,7 @@ fn process_execute_with_winternitz<'a>(
     };
 
     // Execute CPI using ArchVM's invoke_signed mechanism
-    // The wallet PDA must sign for this CPI
-    let wallet_seeds: &[&[u8]] = &[
-        b"wallet",
-        wallet.owner.as_ref(),
-        vault_id.as_ref(),
-        &[wallet.bump],
-    ];
-
+    // The wallet PDA must sign for this CPI (using wallet_seeds defined above)
     // Convert Vec<&AccountInfo> to Vec<AccountInfo> for invoke_signed
     let cpi_account_infos: Vec<AccountInfo> = remaining_accounts
         .iter()
@@ -955,13 +969,19 @@ fn process_withdraw_fees<'a>(
         .checked_sub(amount)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    // Serialize updated factory
+    // Build factory PDA seeds for signing
+    let factory_seeds: &[&[u8]] = &[
+        b"factory",
+        &[factory.bump],
+    ];
+
+    // Transfer the fees from factory to recipient
+    crate::utils::transfer_value(factory_info, recipient_info, amount, factory_seeds)?;
+
+    // Serialize updated factory (after transfer to ensure state consistency)
     let mut data = factory_info.try_borrow_mut_data()?;
     factory.serialize(&mut &mut data[..])
         .map_err(|_| ProgramError::InvalidAccountData)?;
-
-    // Transfer the fees from factory to recipient
-    crate::utils::transfer_value(factory_info, recipient_info, amount)?;
 
     msg!("Withdrew {} fees", amount);
     Ok(())

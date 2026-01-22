@@ -15,7 +15,13 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use arch_program::{account::AccountInfo, program_error::ProgramError, pubkey::Pubkey};
+use arch_program::{
+    account::AccountInfo,
+    program::invoke_signed,
+    program_error::ProgramError,
+    pubkey::Pubkey,
+    system_instruction,
+};
 #[cfg(feature = "debug")]
 use arch_program::msg;
 use hashsigs::{PublicKey, WOTSPlus};
@@ -266,54 +272,74 @@ pub fn create_change_owner_message(
 }
 
 // =============================================================================
-// Value Transfer (Authorization Only)
+// Value Transfer (Lamports/ARCH tokens)
 // =============================================================================
 
-/// Authorize a value transfer (satoshis) from one account to another.
+/// Transfer lamports (ARCH tokens) from a PDA to another account.
 ///
-/// # Important: Authorization Only
-///
-/// In Arch Network's UTXO model, this function does NOT perform actual Bitcoin
-/// value transfers. The program's role is to **authorize** transfers through
-/// WOTS+ signature verification - the actual UTXO manipulation happens at the
-/// transaction level, constructed by the client.
-///
-/// ## How Value Transfers Work in Arch Network
-///
-/// 1. **Client constructs transaction**: The client builds a Bitcoin transaction
-///    with inputs (source UTXOs) and outputs (destination amounts)
-/// 2. **Program authorizes**: This program verifies the WOTS+ signature, confirming
-///    the wallet owner approved the transfer
-/// 3. **Network signs**: The Arch Network's distributed key signs the transaction
-/// 4. **Bitcoin broadcast**: The signed transaction is broadcast to Bitcoin
-///
-/// ## What This Function Does
-///
-/// - Validates the transfer is authorized (caller must verify WOTS+ signature first)
-/// - Returns success to indicate the authorization is valid
-/// - Does NOT move actual Bitcoin - that's handled by the transaction structure
+/// This function transfers the native ARCH token (lamports) between accounts
+/// using the system program. Since the source account is typically a PDA
+/// (like a QuipWallet or QuipFactory), this uses `invoke_signed` with the PDA's seeds.
 ///
 /// ## Parameters
 ///
-/// - `_from`: Source account (UTXO owner) - unused, authorization done via WOTS+
-/// - `_to`: Destination account - unused, specified in transaction outputs
-/// - `_amount`: Transfer amount in satoshis - unused, specified in transaction outputs
+/// - `from`: Source account (must be a PDA owned by this program)
+/// - `to`: Destination account
+/// - `amount`: Amount of lamports to transfer
+/// - `signer_seeds`: Seeds used to derive the PDA (for signing)
 ///
 /// ## Returns
 ///
-/// Always returns `Ok(())` if called after successful WOTS+ verification.
-/// The actual transfer validity is ensured by:
-/// 1. WOTS+ signature verification (caller's responsibility)
-/// 2. Transaction construction (client's responsibility)
-/// 3. Network validation (Arch Network's responsibility)
-pub fn transfer_value(
-    _from: &AccountInfo,
-    _to: &AccountInfo,
-    _amount: u64,
+/// Returns `Ok(())` on successful transfer, or a `ProgramError` if the
+/// transfer fails (e.g., insufficient funds, invalid accounts).
+pub fn transfer_value<'a>(
+    from: &AccountInfo<'a>,
+    to: &AccountInfo<'a>,
+    amount: u64,
+    signer_seeds: &[&[u8]],
 ) -> Result<(), ProgramError> {
-    // Authorization-only: The WOTS+ signature verification in the caller
-    // confirms the wallet owner approved this transfer. The actual Bitcoin
-    // UTXO manipulation is specified in the client-constructed transaction
-    // and executed by the Arch Network after signing.
-    Ok(())
+    // Skip zero-amount transfers
+    if amount == 0 {
+        return Ok(());
+    }
+
+    // Create the system instruction for transferring lamports
+    let ix = system_instruction::transfer(from.key, to.key, amount);
+
+    // Execute the transfer using invoke_signed since 'from' is a PDA
+    invoke_signed(&ix, &[from.clone(), to.clone()], &[signer_seeds])
+}
+
+/// Transfer lamports (ARCH tokens) from a signer account to another account.
+///
+/// This function is used when the source account is a regular signer (not a PDA),
+/// such as when a user pays the wallet creation fee during deposit.
+///
+/// ## Parameters
+///
+/// - `from`: Source account (must be a signer)
+/// - `to`: Destination account
+/// - `amount`: Amount of lamports to transfer
+///
+/// ## Returns
+///
+/// Returns `Ok(())` on successful transfer, or a `ProgramError` if the
+/// transfer fails (e.g., insufficient funds, invalid accounts).
+pub fn transfer_value_from_signer<'a>(
+    from: &AccountInfo<'a>,
+    to: &AccountInfo<'a>,
+    amount: u64,
+) -> Result<(), ProgramError> {
+    use arch_program::program::invoke;
+
+    // Skip zero-amount transfers
+    if amount == 0 {
+        return Ok(());
+    }
+
+    // Create the system instruction for transferring lamports
+    let ix = system_instruction::transfer(from.key, to.key, amount);
+
+    // Execute the transfer using invoke since 'from' is a signer
+    invoke(&ix, &[from.clone(), to.clone()])
 }
