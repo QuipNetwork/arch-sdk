@@ -17,10 +17,14 @@
 
 use arch_program::{
     account::AccountInfo,
-    program::invoke_signed,
+    bitcoin::{self, absolute::LockTime, transaction::Version, Transaction},
+    helper::add_state_transition,
+    input_to_sign::InputToSign,
+    program::{invoke_signed, set_transaction_to_sign},
     program_error::ProgramError,
     pubkey::Pubkey,
     system_instruction,
+    system_program,
 };
 #[cfg(feature = "debug")]
 use arch_program::msg;
@@ -342,4 +346,86 @@ pub fn transfer_value_from_signer<'a>(
 
     // Execute the transfer using invoke since 'from' is a signer
     invoke(&ix, &[from.clone(), to.clone()])
+}
+
+// =============================================================================
+// System Program Verification
+// =============================================================================
+
+/// Verify that the provided account is the system program
+pub fn verify_system_program(account: &AccountInfo) -> Result<(), ProgramError> {
+    if account.key != &system_program::SYSTEM_PROGRAM_ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    Ok(())
+}
+
+// =============================================================================
+// Balance Checks
+// =============================================================================
+
+/// Check if an account has sufficient balance for an operation
+pub fn check_sufficient_balance(
+    account: &AccountInfo,
+    required_amount: u64,
+) -> Result<(), ProgramError> {
+    if account.lamports() < required_amount {
+        return Err(QuipError::InsufficientWalletBalance.into());
+    }
+    Ok(())
+}
+
+// =============================================================================
+// Bitcoin Transaction Anchoring
+// =============================================================================
+
+/// Anchor a state transition to a Bitcoin transaction
+///
+/// This creates a cryptographic link between program state and a Bitcoin transaction,
+/// ensuring all state transitions are anchored to and signed by Bitcoin UTXOs.
+///
+/// ## Parameters
+///
+/// - `accounts`: All accounts passed to the instruction (needed for set_transaction_to_sign)
+/// - `state_account`: The account whose state is being anchored
+/// - `tx_hex`: Raw Bitcoin transaction bytes for fee input
+///
+/// ## Returns
+///
+/// Returns `Ok(())` on successful anchoring, or a `ProgramError` if the
+/// transaction is invalid or signing fails.
+pub fn anchor_state_transition<'a>(
+    accounts: &'a [AccountInfo<'a>],
+    state_account: &AccountInfo<'a>,
+    tx_hex: &[u8],
+) -> Result<(), ProgramError> {
+    // Deserialize the Bitcoin transaction from raw bytes
+    let fees_tx: Transaction = bitcoin::consensus::deserialize(tx_hex)
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
+
+    // Create new transaction for state anchoring
+    let mut tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![],
+        output: vec![],
+    };
+
+    // Embed account state into Bitcoin tx (creates cryptographic link)
+    add_state_transition(&mut tx, state_account)
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+
+    // Add fee input from provided transaction
+    if fees_tx.input.is_empty() {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    tx.input.push(fees_tx.input[0].clone());
+
+    // Queue for signing - the state account must sign this input
+    let inputs = [InputToSign {
+        index: 0,
+        signer: *state_account.key,
+    }];
+
+    set_transaction_to_sign(accounts, &tx, &inputs)
 }

@@ -69,6 +69,7 @@ pub fn process_instruction<'a>(
             to,
             pq_to,
             initial_deposit,
+            tx_hex,
         } => {
             msg!("Instruction: DepositToWinternitz");
             process_deposit_to_winternitz(
@@ -78,6 +79,7 @@ pub fn process_instruction<'a>(
                 to,
                 pq_to,
                 initial_deposit,
+                tx_hex,
             )
         }
 
@@ -85,18 +87,20 @@ pub fn process_instruction<'a>(
             vault_id,
             pq_next,
             amount,
+            tx_hex,
         } => {
             msg!("Instruction: TransferWithWinternitz");
-            process_transfer_with_winternitz(program_id, accounts, vault_id, pq_next, amount)
+            process_transfer_with_winternitz(program_id, accounts, vault_id, pq_next, amount, tx_hex)
         }
 
         QuipInstruction::ExecuteWithWinternitz {
             pq_next,
             vault_id,
             account_metas,
+            tx_hex,
         } => {
             msg!("Instruction: ExecuteWithWinternitz");
-            process_execute_with_winternitz(program_id, accounts, pq_next, vault_id, account_metas)
+            process_execute_with_winternitz(program_id, accounts, pq_next, vault_id, account_metas, tx_hex)
         }
 
         QuipInstruction::ChangePqOwner { vault_id, pq_next } => {
@@ -156,7 +160,10 @@ fn process_initialize_factory<'a>(
     let account_info_iter = &mut accounts.iter();
     let factory_info = next_account_info(account_info_iter)?;
     let _payer_info = next_account_info(account_info_iter)?;
-    let _system_program_info = next_account_info(account_info_iter)?;
+    let system_program_info = next_account_info(account_info_iter)?;
+
+    // Verify system program
+    crate::utils::verify_system_program(system_program_info)?;
 
     // Verify account ownership and permissions
     if factory_info.owner != program_id {
@@ -209,13 +216,17 @@ fn process_deposit_to_winternitz<'a>(
     to: [u8; 32],
     pq_to: WinternitzPublicKey,
     initial_deposit: u64,
+    tx_hex: Vec<u8>,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
     let factory_info = next_account_info(account_info_iter)?;
     let wallet_info = next_account_info(account_info_iter)?;
     let _owner_info = next_account_info(account_info_iter)?;
     let payer_info = next_account_info(account_info_iter)?;
-    let _system_program_info = next_account_info(account_info_iter)?;
+    let system_program_info = next_account_info(account_info_iter)?;
+
+    // Verify system program
+    crate::utils::verify_system_program(system_program_info)?;
 
     // Verify account ownership and permissions
     if factory_info.owner != program_id {
@@ -300,6 +311,9 @@ fn process_deposit_to_winternitz<'a>(
     wallet.serialize(&mut &mut wallet_data[..])
         .map_err(|_| ProgramError::InvalidAccountData)?;
 
+    // Anchor state transition to Bitcoin
+    crate::utils::anchor_state_transition(accounts, wallet_info, &tx_hex)?;
+
     msg!(
         "Wallet created with vault_id: {}, deposit: {}",
         hex::encode(vault_id),
@@ -314,14 +328,18 @@ fn process_transfer_with_winternitz<'a>(
     vault_id: [u8; 32],
     pq_next: WinternitzPublicKey,
     amount: u64,
+    tx_hex: Vec<u8>,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
     let factory_info = next_account_info(account_info_iter)?;
     let wallet_info = next_account_info(account_info_iter)?;
     let recipient_info = next_account_info(account_info_iter)?;
     let payer_info = next_account_info(account_info_iter)?;
-    let _system_program_info = next_account_info(account_info_iter)?;
+    let system_program_info = next_account_info(account_info_iter)?;
     let signature_storage_info = next_account_info(account_info_iter)?;
+
+    // Verify system program
+    crate::utils::verify_system_program(system_program_info)?;
 
     // Verify account ownership and permissions
     if factory_info.owner != program_id {
@@ -385,6 +403,12 @@ fn process_transfer_with_winternitz<'a>(
         return Err(QuipError::SignatureStorageNotInitialized.into());
     }
 
+    // Pre-check wallet balance: fee + transfer amount
+    let total_required = factory.transfer_fee
+        .checked_add(amount)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    crate::utils::check_sufficient_balance(wallet_info, total_required)?;
+
     // Create and verify signature
     let signature = WinternitzSignature {
         signature_data: signature_storage.signature_data.clone(),
@@ -440,6 +464,9 @@ fn process_transfer_with_winternitz<'a>(
     wallet.serialize(&mut &mut wallet_data[..])
         .map_err(|_| ProgramError::InvalidAccountData)?;
 
+    // Anchor state transition to Bitcoin
+    crate::utils::anchor_state_transition(accounts, wallet_info, &tx_hex)?;
+
     msg!(
         "Transfer of {} to {} executed with vault_id: {}",
         amount,
@@ -455,15 +482,19 @@ fn process_execute_with_winternitz<'a>(
     pq_next: WinternitzPublicKey,
     vault_id: [u8; 32],
     account_metas: Vec<CpiAccountMeta>,
+    tx_hex: Vec<u8>,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
     let factory_info = next_account_info(account_info_iter)?;
     let wallet_info = next_account_info(account_info_iter)?;
     let target_program_info = next_account_info(account_info_iter)?;
     let payer_info = next_account_info(account_info_iter)?;
-    let _system_program_info = next_account_info(account_info_iter)?;
+    let system_program_info = next_account_info(account_info_iter)?;
     let signature_storage_info = next_account_info(account_info_iter)?;
     let opdata_storage_info = next_account_info(account_info_iter)?;
+
+    // Verify system program
+    crate::utils::verify_system_program(system_program_info)?;
 
     // Verify account ownership and permissions
     if factory_info.owner != program_id {
@@ -538,6 +569,9 @@ fn process_execute_with_winternitz<'a>(
     if !opdata_storage.is_initialized {
         return Err(QuipError::OpdataStorageNotInitialized.into());
     }
+
+    // Pre-check wallet balance for execute fee
+    crate::utils::check_sufficient_balance(wallet_info, factory.execute_fee)?;
 
     // Collect remaining accounts for CPI
     let remaining_accounts: Vec<&AccountInfo> = account_info_iter.collect();
@@ -632,6 +666,9 @@ fn process_execute_with_winternitz<'a>(
         .map(|a| (*a).clone())
         .collect();
     invoke_signed(&cpi_instruction, &cpi_account_infos, &[wallet_seeds])?;
+
+    // Anchor state transition to Bitcoin
+    crate::utils::anchor_state_transition(accounts, wallet_info, &tx_hex)?;
 
     msg!(
         "Execute CPI to {} with vault_id: {}",
@@ -734,7 +771,10 @@ fn process_store_signature<'a>(
     let account_info_iter = &mut accounts.iter();
     let signature_storage_info = next_account_info(account_info_iter)?;
     let payer_info = next_account_info(account_info_iter)?;
-    let _system_program_info = next_account_info(account_info_iter)?;
+    let system_program_info = next_account_info(account_info_iter)?;
+
+    // Verify system program
+    crate::utils::verify_system_program(system_program_info)?;
 
     // Verify account ownership and permissions
     if signature_storage_info.owner != program_id {
@@ -800,7 +840,10 @@ fn process_store_opdata<'a>(
     let account_info_iter = &mut accounts.iter();
     let opdata_storage_info = next_account_info(account_info_iter)?;
     let payer_info = next_account_info(account_info_iter)?;
-    let _system_program_info = next_account_info(account_info_iter)?;
+    let system_program_info = next_account_info(account_info_iter)?;
+
+    // Verify system program
+    crate::utils::verify_system_program(system_program_info)?;
 
     // Verify account ownership and permissions
     if opdata_storage_info.owner != program_id {
@@ -958,10 +1001,11 @@ fn process_withdraw_fees<'a>(
         return Err(QuipError::UnauthorizedSigner.into());
     }
 
-    // Verify sufficient fees
+    // Verify sufficient fees (both tracked and actual balance)
     if factory.accumulated_fees < amount {
         return Err(QuipError::InsufficientFunds.into());
     }
+    crate::utils::check_sufficient_balance(factory_info, amount)?;
 
     // Deduct fees
     factory.accumulated_fees = factory
