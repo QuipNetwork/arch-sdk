@@ -603,13 +603,21 @@ fn process_execute_with_winternitz<'a>(
         data: opdata_storage.opdata.clone(),
     };
 
-    // Execute CPI using ArchVM's invoke mechanism
-    // Convert Vec<&AccountInfo> to Vec<AccountInfo> for invoke
+    // Execute CPI using ArchVM's invoke_signed mechanism
+    // The wallet PDA must sign for this CPI
+    let wallet_seeds: &[&[u8]] = &[
+        b"wallet",
+        wallet.owner.as_ref(),
+        vault_id.as_ref(),
+        &[wallet.bump],
+    ];
+
+    // Convert Vec<&AccountInfo> to Vec<AccountInfo> for invoke_signed
     let cpi_account_infos: Vec<AccountInfo> = remaining_accounts
         .iter()
         .map(|a| (*a).clone())
         .collect();
-    invoke(&cpi_instruction, &cpi_account_infos)?;
+    invoke_signed(&cpi_instruction, &cpi_account_infos, &[wallet_seeds])?;
 
     msg!(
         "Execute CPI to {} with vault_id: {}",
