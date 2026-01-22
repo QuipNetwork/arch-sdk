@@ -16,10 +16,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use arch_program::{
-    account::{AccountInfo, AccountMeta},
+    account::{AccountInfo, AccountMeta, next_account_info},
     instruction::Instruction,
     msg,
-    program::{get_bitcoin_block_height, invoke},
+    program::{get_bitcoin_block_height, invoke_signed},
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -31,13 +31,6 @@ use crate::state::*;
 
 /// Program result type
 pub type ProgramResult = Result<(), ProgramError>;
-
-/// Helper to get next account from iterator
-fn next_account_info<'a, I: Iterator<Item = &'a AccountInfo<'a>>>(
-    iter: &mut I,
-) -> Result<&'a AccountInfo<'a>, ProgramError> {
-    iter.next().ok_or(ProgramError::NotEnoughAccountKeys)
-}
 
 /// Helper to convert Pubkey to bytes
 fn pubkey_to_bytes(pubkey: &Pubkey) -> [u8; 32] {
