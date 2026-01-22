@@ -65,7 +65,7 @@ pub struct QuipFactory {
     pub total_wallets: u64,
     /// Accumulated fees ready for withdrawal
     pub accumulated_fees: u64,
-    /// Factory bump seed (for address derivation verification)
+    /// PDA bump seed (required for invoke_signed in CPIs)
     pub bump: u8,
 }
 
@@ -102,7 +102,7 @@ pub struct QuipWallet {
     pub last_activity: i64,
     /// Number of transactions performed
     pub transaction_count: u64,
-    /// Wallet bump seed (for address derivation verification)
+    /// PDA bump seed (required for invoke_signed in CPIs)
     pub bump: u8,
 }
 

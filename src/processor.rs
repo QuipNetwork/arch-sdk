@@ -173,8 +173,8 @@ fn process_initialize_factory<'a>(
         return Err(QuipError::AccountNotWritable.into());
     }
 
-    // Verify factory account derivation
-    crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
+    // Verify factory account derivation and get bump
+    let factory_bump = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
     // Check if factory is already initialized
     let factory_data = factory_info.try_borrow_data()?;
@@ -197,7 +197,7 @@ fn process_initialize_factory<'a>(
         execute_fee,
         total_wallets: 0,
         accumulated_fees: 0,
-        bump: 0, // ArchVM doesn't use bumps like Solana PDAs
+        bump: factory_bump, // PDA bump seed for invoke_signed
     };
 
     // Serialize and write to account
@@ -240,9 +240,9 @@ fn process_deposit_to_winternitz<'a>(
         return Err(QuipError::UnauthorizedSigner.into());
     }
 
-    // Verify account derivations
-    crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
-    crate::utils::verify_wallet_address(program_id, &to, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
+    // Verify account derivations and get wallet bump
+    let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
+    let wallet_bump = crate::utils::verify_wallet_address(program_id, &to, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
     // Check if wallet already exists
     let wallet_data = wallet_info.try_borrow_data()?;
@@ -289,7 +289,7 @@ fn process_deposit_to_winternitz<'a>(
         created_at: current_block,
         last_activity: current_block,
         transaction_count: 0,
-        bump: 0,
+        bump: wallet_bump, // PDA bump seed for invoke_signed
     };
 
     // Serialize states
@@ -347,9 +347,9 @@ fn process_transfer_with_winternitz<'a>(
     let payer_bytes = pubkey_to_bytes(payer_info.key);
 
     // Verify account derivations
-    crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
-    crate::utils::verify_wallet_address(program_id, &payer_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
-    crate::utils::verify_signature_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(signature_storage_info.key))?;
+    let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
+    let _ = crate::utils::verify_wallet_address(program_id, &payer_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
+    let _ = crate::utils::verify_signature_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(signature_storage_info.key))?;
 
     // Load states
     let factory_data = factory_info.try_borrow_data()?;
@@ -484,10 +484,10 @@ fn process_execute_with_winternitz<'a>(
     let payer_bytes = pubkey_to_bytes(payer_info.key);
 
     // Verify account derivations
-    crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
-    crate::utils::verify_wallet_address(program_id, &payer_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
-    crate::utils::verify_signature_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(signature_storage_info.key))?;
-    crate::utils::verify_opdata_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(opdata_storage_info.key))?;
+    let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
+    let _ = crate::utils::verify_wallet_address(program_id, &payer_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
+    let _ = crate::utils::verify_signature_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(signature_storage_info.key))?;
+    let _ = crate::utils::verify_opdata_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(opdata_storage_info.key))?;
 
     // Load states
     let factory_data = factory_info.try_borrow_data()?;
@@ -657,8 +657,8 @@ fn process_change_pq_owner<'a>(
     let payer_bytes = pubkey_to_bytes(payer_info.key);
 
     // Verify account derivations
-    crate::utils::verify_wallet_address(program_id, &payer_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
-    crate::utils::verify_signature_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(signature_storage_info.key))?;
+    let _ = crate::utils::verify_wallet_address(program_id, &payer_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
+    let _ = crate::utils::verify_signature_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(signature_storage_info.key))?;
 
     // Load states
     let wallet_data = wallet_info.try_borrow_data()?;
@@ -736,7 +736,7 @@ fn process_store_signature<'a>(
 
     // Verify signature storage derivation
     let payer_bytes = pubkey_to_bytes(payer_info.key);
-    crate::utils::verify_signature_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(signature_storage_info.key))?;
+    let _ = crate::utils::verify_signature_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(signature_storage_info.key))?;
 
     let mut storage = if is_first_chunk {
         // Initialize new storage
@@ -802,7 +802,7 @@ fn process_store_opdata<'a>(
 
     // Verify opdata storage derivation
     let payer_bytes = pubkey_to_bytes(payer_info.key);
-    crate::utils::verify_opdata_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(opdata_storage_info.key))?;
+    let _ = crate::utils::verify_opdata_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(opdata_storage_info.key))?;
 
     let mut storage = if is_first_chunk {
         // Initialize new storage
@@ -859,7 +859,7 @@ fn process_update_fees<'a>(
     }
 
     // Verify factory account derivation
-    crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
+    let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
     // Verify admin is signer
     if !admin_info.is_signer {
@@ -920,7 +920,7 @@ fn process_withdraw_fees<'a>(
     }
 
     // Verify factory account derivation
-    crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
+    let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
     // Verify admin is signer
     if !admin_info.is_signer {
@@ -984,7 +984,7 @@ fn process_transfer_ownership<'a>(
     }
 
     // Verify factory account derivation
-    crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
+    let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
     // Verify admin is signer
     if !admin_info.is_signer {

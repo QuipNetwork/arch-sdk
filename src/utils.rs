@@ -24,121 +24,116 @@ use crate::error::QuipError;
 use crate::state::{CpiAccountMeta, WinternitzPublicKey, WinternitzSignature};
 
 // =============================================================================
-// Address Derivation
+// PDA Address Derivation
 // =============================================================================
 
-/// Derive the factory address from seeds
-/// In ArchVM, we use deterministic hashing instead of Solana's PDA mechanism
-pub fn derive_factory_address(program_id: &Pubkey) -> [u8; 32] {
-    let mut data = Vec::new();
-    data.extend_from_slice(b"factory");
-    data.extend_from_slice(program_id.as_ref());
-    keccak256_hash(&data)
+/// Derive factory PDA address using Arch's native PDA mechanism
+/// Returns (pubkey_bytes, bump)
+pub fn derive_factory_address(program_id: &Pubkey) -> ([u8; 32], u8) {
+    let (pda, bump) = Pubkey::find_program_address(&[b"factory"], program_id);
+    (pda.serialize(), bump)
 }
 
-/// Derive a wallet address from owner and vault_id
+/// Derive wallet PDA address using Arch's native PDA mechanism
+/// Returns (pubkey_bytes, bump)
 pub fn derive_wallet_address(
     program_id: &Pubkey,
     owner: &[u8; 32],
     vault_id: &[u8; 32],
-) -> [u8; 32] {
-    let mut data = Vec::new();
-    data.extend_from_slice(b"wallet");
-    data.extend_from_slice(owner);
-    data.extend_from_slice(vault_id);
-    data.extend_from_slice(program_id.as_ref());
-    keccak256_hash(&data)
+) -> ([u8; 32], u8) {
+    let (pda, bump) = Pubkey::find_program_address(
+        &[b"wallet", owner.as_ref(), vault_id.as_ref()],
+        program_id,
+    );
+    (pda.serialize(), bump)
 }
 
-/// Derive signature storage address
-pub fn derive_signature_storage_address(program_id: &Pubkey, owner: &[u8; 32]) -> [u8; 32] {
-    let mut data = Vec::new();
-    data.extend_from_slice(b"signature");
-    data.extend_from_slice(owner);
-    data.extend_from_slice(program_id.as_ref());
-    keccak256_hash(&data)
+/// Derive signature storage PDA address
+/// Returns (pubkey_bytes, bump)
+pub fn derive_signature_storage_address(program_id: &Pubkey, owner: &[u8; 32]) -> ([u8; 32], u8) {
+    let (pda, bump) = Pubkey::find_program_address(
+        &[b"signature", owner.as_ref()],
+        program_id,
+    );
+    (pda.serialize(), bump)
 }
 
-/// Derive opdata storage address
-pub fn derive_opdata_storage_address(program_id: &Pubkey, owner: &[u8; 32]) -> [u8; 32] {
-    let mut data = Vec::new();
-    data.extend_from_slice(b"opdata");
-    data.extend_from_slice(owner);
-    data.extend_from_slice(program_id.as_ref());
-    keccak256_hash(&data)
+/// Derive opdata storage PDA address
+/// Returns (pubkey_bytes, bump)
+pub fn derive_opdata_storage_address(program_id: &Pubkey, owner: &[u8; 32]) -> ([u8; 32], u8) {
+    let (pda, bump) = Pubkey::find_program_address(
+        &[b"opdata", owner.as_ref()],
+        program_id,
+    );
+    (pda.serialize(), bump)
 }
 
 // =============================================================================
 // Account Derivation Verification
 // =============================================================================
 
-/// Verify that an account key matches the expected factory address
+/// Verify that an account key matches the expected factory address and return bump
 pub fn verify_factory_address(
     program_id: &Pubkey,
     account_key: &[u8; 32],
-) -> Result<(), ProgramError> {
-    let expected = derive_factory_address(program_id);
+) -> Result<u8, ProgramError> {
+    let (expected, bump) = derive_factory_address(program_id);
     if *account_key != expected {
         return Err(QuipError::InvalidAccountDerivation.into());
     }
-    Ok(())
+    Ok(bump)
 }
 
-/// Verify that an account key matches the expected wallet address
+/// Verify that an account key matches the expected wallet address and return bump
 pub fn verify_wallet_address(
     program_id: &Pubkey,
     owner: &[u8; 32],
     vault_id: &[u8; 32],
     account_key: &[u8; 32],
-) -> Result<(), ProgramError> {
-    let expected = derive_wallet_address(program_id, owner, vault_id);
+) -> Result<u8, ProgramError> {
+    let (expected, bump) = derive_wallet_address(program_id, owner, vault_id);
     if *account_key != expected {
         return Err(QuipError::InvalidAccountDerivation.into());
     }
-    Ok(())
+    Ok(bump)
 }
 
-/// Verify that an account key matches the expected signature storage address
+/// Verify that an account key matches the expected signature storage address and return bump
 pub fn verify_signature_storage_address(
     program_id: &Pubkey,
     owner: &[u8; 32],
     account_key: &[u8; 32],
-) -> Result<(), ProgramError> {
-    let expected = derive_signature_storage_address(program_id, owner);
+) -> Result<u8, ProgramError> {
+    let (expected, bump) = derive_signature_storage_address(program_id, owner);
     if *account_key != expected {
         return Err(QuipError::InvalidAccountDerivation.into());
     }
-    Ok(())
+    Ok(bump)
 }
 
-/// Verify that an account key matches the expected opdata storage address
+/// Verify that an account key matches the expected opdata storage address and return bump
 pub fn verify_opdata_storage_address(
     program_id: &Pubkey,
     owner: &[u8; 32],
     account_key: &[u8; 32],
-) -> Result<(), ProgramError> {
-    let expected = derive_opdata_storage_address(program_id, owner);
+) -> Result<u8, ProgramError> {
+    let (expected, bump) = derive_opdata_storage_address(program_id, owner);
     if *account_key != expected {
         return Err(QuipError::InvalidAccountDerivation.into());
     }
-    Ok(())
+    Ok(bump)
 }
 
 // =============================================================================
-// Keccak256 Hash Function
+// Keccak256 Hash Function (for WOTS+ signatures)
 // =============================================================================
 
-/// Compute Keccak256 hash using hashsigs' implementation
+/// Compute Keccak256 hash for WOTS+ signature verification
 fn keccak256_hash(data: &[u8]) -> [u8; 32] {
     use sha3::{Digest, Keccak256};
     let mut hasher = Keccak256::new();
     hasher.update(data);
     hasher.finalize().into()
-}
-
-/// Generate a vault ID from a seed string
-pub fn generate_vault_id(seed: &str) -> [u8; 32] {
-    keccak256_hash(seed.as_bytes())
 }
 
 // =============================================================================
@@ -274,34 +269,54 @@ pub fn create_change_owner_message(
 }
 
 // =============================================================================
-// Value Transfer
+// Value Transfer (Authorization Only)
 // =============================================================================
 
-/// Transfer value (satoshis) from one account to another
-/// 
-/// In ArchVM, value transfer is accomplished via the UTXO model at the
-/// transaction level, not within program execution. The program's role is to
-/// authorize the transfer through signature verification (which we do via WOTS+).
-/// 
-/// The actual Bitcoin UTXO manipulation is handled by the ArchVM runtime
-/// based on the transaction inputs/outputs, not by the program directly.
-/// 
-/// This function validates the transfer authorization has been properly verified
-/// and logs the intended transfer. The ArchVM runtime handles the actual
-/// satoshi movement based on the transaction structure.
+/// Authorize a value transfer (satoshis) from one account to another.
+///
+/// # Important: Authorization Only
+///
+/// In Arch Network's UTXO model, this function does NOT perform actual Bitcoin
+/// value transfers. The program's role is to **authorize** transfers through
+/// WOTS+ signature verification - the actual UTXO manipulation happens at the
+/// transaction level, constructed by the client.
+///
+/// ## How Value Transfers Work in Arch Network
+///
+/// 1. **Client constructs transaction**: The client builds a Bitcoin transaction
+///    with inputs (source UTXOs) and outputs (destination amounts)
+/// 2. **Program authorizes**: This program verifies the WOTS+ signature, confirming
+///    the wallet owner approved the transfer
+/// 3. **Network signs**: The Arch Network's distributed key signs the transaction
+/// 4. **Bitcoin broadcast**: The signed transaction is broadcast to Bitcoin
+///
+/// ## What This Function Does
+///
+/// - Validates the transfer is authorized (caller must verify WOTS+ signature first)
+/// - Returns success to indicate the authorization is valid
+/// - Does NOT move actual Bitcoin - that's handled by the transaction structure
+///
+/// ## Parameters
+///
+/// - `_from`: Source account (UTXO owner) - unused, authorization done via WOTS+
+/// - `_to`: Destination account - unused, specified in transaction outputs
+/// - `_amount`: Transfer amount in satoshis - unused, specified in transaction outputs
+///
+/// ## Returns
+///
+/// Always returns `Ok(())` if called after successful WOTS+ verification.
+/// The actual transfer validity is ensured by:
+/// 1. WOTS+ signature verification (caller's responsibility)
+/// 2. Transaction construction (client's responsibility)
+/// 3. Network validation (Arch Network's responsibility)
 pub fn transfer_value(
     _from: &AccountInfo,
     _to: &AccountInfo,
     _amount: u64,
 ) -> Result<(), ProgramError> {
-    // In ArchVM's UTXO model, value transfers are specified in the transaction
-    // inputs and outputs, not manipulated directly by the program.
-    // 
-    // The program's job is to:
-    // 1. Verify the WOTS+ signature authorizes this transfer (done before calling this)
-    // 2. Update program state to reflect the transfer (done in the caller)
-    // 
-    // The ArchVM runtime handles the actual Bitcoin UTXO manipulation.
-    // This is a no-op because the authorization is already verified.
+    // Authorization-only: The WOTS+ signature verification in the caller
+    // confirms the wallet owner approved this transfer. The actual Bitcoin
+    // UTXO manipulation is specified in the client-constructed transaction
+    // and executed by the Arch Network after signing.
     Ok(())
 }
