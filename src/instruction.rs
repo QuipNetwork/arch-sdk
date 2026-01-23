@@ -15,6 +15,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use arch_program::utxo::UtxoMeta;
 use borsh::{BorshDeserialize, BorshSerialize};
 use crate::state::{CpiAccountMeta, WinternitzPublicKey};
 
@@ -32,6 +33,8 @@ pub enum QuipInstruction {
         creation_fee: u64,
         transfer_fee: u64,
         execute_fee: u64,
+        /// UTXO for anchoring factory account creation
+        factory_utxo: UtxoMeta,
     },
 
     /// Create a new wallet with WOTS+ key and initial deposit
@@ -47,6 +50,8 @@ pub enum QuipInstruction {
         to: [u8; 32],
         pq_to: WinternitzPublicKey,
         initial_deposit: u64,
+        /// UTXO for anchoring wallet account creation
+        wallet_utxo: UtxoMeta,
         /// Bitcoin transaction for anchoring state transition
         tx_hex: Vec<u8>,
     },
