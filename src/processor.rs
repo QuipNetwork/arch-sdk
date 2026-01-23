@@ -72,7 +72,6 @@ pub fn process_instruction<'a>(
             pq_to,
             initial_deposit,
             wallet_utxo,
-            tx_hex,
         } => {
             msg!("Instruction: DepositToWinternitz");
             process_deposit_to_winternitz(
@@ -83,7 +82,6 @@ pub fn process_instruction<'a>(
                 pq_to,
                 initial_deposit,
                 wallet_utxo,
-                tx_hex,
             )
         }
 
@@ -91,20 +89,18 @@ pub fn process_instruction<'a>(
             vault_id,
             pq_next,
             amount,
-            tx_hex,
         } => {
             msg!("Instruction: TransferWithWinternitz");
-            process_transfer_with_winternitz(program_id, accounts, vault_id, pq_next, amount, tx_hex)
+            process_transfer_with_winternitz(program_id, accounts, vault_id, pq_next, amount)
         }
 
         QuipInstruction::ExecuteWithWinternitz {
             pq_next,
             vault_id,
             account_metas,
-            tx_hex,
         } => {
             msg!("Instruction: ExecuteWithWinternitz");
-            process_execute_with_winternitz(program_id, accounts, pq_next, vault_id, account_metas, tx_hex)
+            process_execute_with_winternitz(program_id, accounts, pq_next, vault_id, account_metas)
         }
 
         QuipInstruction::ChangePqOwner { vault_id, pq_next } => {
@@ -238,7 +234,6 @@ fn process_deposit_to_winternitz<'a>(
     pq_to: WinternitzPublicKey,
     initial_deposit: u64,
     wallet_utxo: arch_program::utxo::UtxoMeta,
-    tx_hex: Vec<u8>,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
     let factory_info = next_account_info(account_info_iter)?;
@@ -348,9 +343,6 @@ fn process_deposit_to_winternitz<'a>(
     wallet.serialize(&mut &mut wallet_data[..])
         .map_err(|_| ProgramError::InvalidAccountData)?;
 
-    // Anchor state transition to Bitcoin
-    crate::utils::anchor_state_transition(accounts, wallet_info, &tx_hex)?;
-
     msg!(
         "Wallet created with vault_id: {}, deposit: {}",
         hex::encode(vault_id),
@@ -365,7 +357,6 @@ fn process_transfer_with_winternitz<'a>(
     vault_id: [u8; 32],
     pq_next: WinternitzPublicKey,
     amount: u64,
-    tx_hex: Vec<u8>,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
     let factory_info = next_account_info(account_info_iter)?;
@@ -501,9 +492,6 @@ fn process_transfer_with_winternitz<'a>(
     wallet.serialize(&mut &mut wallet_data[..])
         .map_err(|_| ProgramError::InvalidAccountData)?;
 
-    // Anchor state transition to Bitcoin
-    crate::utils::anchor_state_transition(accounts, wallet_info, &tx_hex)?;
-
     msg!(
         "Transfer of {} to {} executed with vault_id: {}",
         amount,
@@ -519,7 +507,6 @@ fn process_execute_with_winternitz<'a>(
     pq_next: WinternitzPublicKey,
     vault_id: [u8; 32],
     account_metas: Vec<CpiAccountMeta>,
-    tx_hex: Vec<u8>,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
     let factory_info = next_account_info(account_info_iter)?;
@@ -703,9 +690,6 @@ fn process_execute_with_winternitz<'a>(
         .map(|a| (*a).clone())
         .collect();
     invoke_signed(&cpi_instruction, &cpi_account_infos, &[wallet_seeds])?;
-
-    // Anchor state transition to Bitcoin
-    crate::utils::anchor_state_transition(accounts, wallet_info, &tx_hex)?;
 
     msg!(
         "Execute CPI to {} with vault_id: {}",

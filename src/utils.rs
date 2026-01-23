@@ -17,10 +17,7 @@
 
 use arch_program::{
     account::AccountInfo,
-    bitcoin::{self, absolute::LockTime, transaction::Version, Transaction},
-    helper::add_state_transition,
-    input_to_sign::InputToSign,
-    program::{invoke_signed, set_transaction_to_sign},
+    program::invoke_signed,
     program_error::ProgramError,
     pubkey::Pubkey,
     system_instruction,
@@ -420,57 +417,3 @@ pub fn check_sufficient_balance(
     Ok(())
 }
 
-// =============================================================================
-// Bitcoin Transaction Anchoring
-// =============================================================================
-
-/// Anchor a state transition to a Bitcoin transaction
-///
-/// This creates a cryptographic link between program state and a Bitcoin transaction,
-/// ensuring all state transitions are anchored to and signed by Bitcoin UTXOs.
-///
-/// ## Parameters
-///
-/// - `accounts`: All accounts passed to the instruction (needed for set_transaction_to_sign)
-/// - `state_account`: The account whose state is being anchored
-/// - `tx_hex`: Raw Bitcoin transaction bytes for fee input
-///
-/// ## Returns
-///
-/// Returns `Ok(())` on successful anchoring, or a `ProgramError` if the
-/// transaction is invalid or signing fails.
-pub fn anchor_state_transition<'a>(
-    accounts: &'a [AccountInfo<'a>],
-    state_account: &AccountInfo<'a>,
-    tx_hex: &[u8],
-) -> Result<(), ProgramError> {
-    // Deserialize the Bitcoin transaction from raw bytes
-    let fees_tx: Transaction = bitcoin::consensus::deserialize(tx_hex)
-        .map_err(|_| ProgramError::InvalidInstructionData)?;
-
-    // Create new transaction for state anchoring
-    let mut tx = Transaction {
-        version: Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![],
-        output: vec![],
-    };
-
-    // Embed account state into Bitcoin tx (creates cryptographic link)
-    add_state_transition(&mut tx, state_account)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-
-    // Add fee input from provided transaction
-    if fees_tx.input.is_empty() {
-        return Err(ProgramError::InvalidInstructionData);
-    }
-    tx.input.push(fees_tx.input[0].clone());
-
-    // Queue for signing - the state account must sign this input
-    let inputs = [InputToSign {
-        index: 0,
-        signer: *state_account.key,
-    }];
-
-    set_transaction_to_sign(accounts, &tx, &inputs)
-}
