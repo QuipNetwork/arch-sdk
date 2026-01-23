@@ -78,11 +78,12 @@ pub enum QuipInstruction {
     /// 2. `[]` Target program
     /// 3. `[signer, writable]` Payer (must be wallet owner)
     /// 4. `[]` System program
-    /// 5. `[]` Opdata storage
-    /// 6+ `[]` Remaining accounts for CPI
+    /// 5+ `[]` Remaining accounts for CPI
     ExecuteWithWinternitz {
         pq_next: WinternitzPublicKey,
         vault_id: [u8; 32],
+        /// Instruction data to pass to the target program
+        instruction_data: Vec<u8>,
         account_metas: Vec<CpiAccountMeta>,
         /// WOTS+ signature
         signature: WinternitzSignature,
@@ -99,17 +100,6 @@ pub enum QuipInstruction {
         pq_next: WinternitzPublicKey,
         /// WOTS+ signature
         signature: WinternitzSignature,
-    },
-
-    /// Store operation data (supports chunking)
-    ///
-    /// Accounts:
-    /// 0. `[writable]` Opdata storage
-    /// 1. `[signer, writable]` Payer
-    /// 2. `[]` System program
-    StoreOpdata {
-        opdata_chunk: Vec<u8>,
-        is_first_chunk: bool,
     },
 
     /// Update factory fees (admin only)

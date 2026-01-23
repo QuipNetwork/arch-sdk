@@ -119,28 +119,6 @@ impl QuipWallet {
 }
 
 // =============================================================================
-// Storage Accounts (for CPI operation data)
-// =============================================================================
-
-/// Temporary storage for instruction operation data
-/// Used to upload instruction data across multiple transactions
-#[derive(BorshSerialize, BorshDeserialize, Clone, Debug)]
-pub struct OpdataStorage {
-    /// Whether this storage is initialized
-    pub is_initialized: bool,
-    /// Operation data (up to 1024 bytes)
-    pub opdata: Vec<u8>,
-}
-
-impl OpdataStorage {
-    pub const MAX_OPDATA_SIZE: usize = 1024;
-    pub const SPACE: usize = 1 + // is_initialized
-        4 + // Vec length prefix (Borsh uses u32)
-        Self::MAX_OPDATA_SIZE;
-    // = 1029 bytes
-}
-
-// =============================================================================
 // CPI Account Meta (for execute_with_winternitz)
 // =============================================================================
 

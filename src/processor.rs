@@ -98,24 +98,17 @@ pub fn process_instruction<'a>(
         QuipInstruction::ExecuteWithWinternitz {
             pq_next,
             vault_id,
+            instruction_data,
             account_metas,
             signature,
         } => {
             msg!("Instruction: ExecuteWithWinternitz");
-            process_execute_with_winternitz(program_id, accounts, pq_next, vault_id, account_metas, signature)
+            process_execute_with_winternitz(program_id, accounts, pq_next, vault_id, instruction_data, account_metas, signature)
         }
 
         QuipInstruction::ChangePqOwner { vault_id, pq_next, signature } => {
             msg!("Instruction: ChangePqOwner");
             process_change_pq_owner(program_id, accounts, vault_id, pq_next, signature)
-        }
-
-        QuipInstruction::StoreOpdata {
-            opdata_chunk,
-            is_first_chunk,
-        } => {
-            msg!("Instruction: StoreOpdata");
-            process_store_opdata(program_id, accounts, opdata_chunk, is_first_chunk)
         }
 
         QuipInstruction::UpdateFees {
@@ -503,6 +496,7 @@ fn process_execute_with_winternitz<'a>(
     accounts: &'a [AccountInfo<'a>],
     pq_next: WinternitzPublicKey,
     vault_id: [u8; 32],
+    instruction_data: Vec<u8>,
     account_metas: Vec<CpiAccountMeta>,
     signature: WinternitzSignature,
 ) -> ProgramResult {
@@ -512,7 +506,6 @@ fn process_execute_with_winternitz<'a>(
     let target_program_info = next_account_info(account_info_iter)?;
     let payer_info = next_account_info(account_info_iter)?;
     let system_program_info = next_account_info(account_info_iter)?;
-    let opdata_storage_info = next_account_info(account_info_iter)?;
 
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
@@ -522,9 +515,6 @@ fn process_execute_with_winternitz<'a>(
         return Err(QuipError::IncorrectProgramOwner.into());
     }
     if wallet_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-    if opdata_storage_info.owner != program_id {
         return Err(QuipError::IncorrectProgramOwner.into());
     }
     if !factory_info.is_writable || !wallet_info.is_writable {
@@ -541,7 +531,6 @@ fn process_execute_with_winternitz<'a>(
     // Verify account derivations
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
     let _ = crate::utils::verify_wallet_address(program_id, &payer_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
-    let _ = crate::utils::verify_opdata_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(opdata_storage_info.key))?;
 
     // Load states
     let factory_data = factory_info.try_borrow_data()?;
@@ -564,19 +553,9 @@ fn process_execute_with_winternitz<'a>(
         return Err(QuipError::AccountNotInitialized.into());
     }
 
-    let op_data = opdata_storage_info.try_borrow_data()?;
-    let opdata_storage = OpdataStorage::try_from_slice(&op_data)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(op_data);
-
     // Verify payer is wallet owner
     if pubkey_to_bytes(payer_info.key) != wallet.owner {
         return Err(QuipError::UnauthorizedSigner.into());
-    }
-
-    // Verify opdata storage is initialized
-    if !opdata_storage.is_initialized {
-        return Err(QuipError::OpdataStorageNotInitialized.into());
     }
 
     // Pre-check wallet balance for execute fee
@@ -602,7 +581,7 @@ fn process_execute_with_winternitz<'a>(
         &wallet.pq_owner,
         &pq_next,
         &target_bytes,
-        &opdata_storage.opdata,
+        &instruction_data,
         &account_pubkeys,
         &account_metas,
     );
@@ -661,7 +640,7 @@ fn process_execute_with_winternitz<'a>(
     let cpi_instruction = Instruction {
         program_id: target_program_info.key.clone(),
         accounts: cpi_account_metas,
-        data: opdata_storage.opdata.clone(),
+        data: instruction_data,
     };
 
     // Execute CPI using ArchVM's invoke_signed mechanism
@@ -745,72 +724,6 @@ fn process_change_pq_owner<'a>(
         .map_err(|_| ProgramError::InvalidAccountData)?;
 
     msg!("Post-quantum owner changed");
-    Ok(())
-}
-
-fn process_store_opdata<'a>(
-    program_id: &Pubkey,
-    accounts: &'a [AccountInfo<'a>],
-    opdata_chunk: Vec<u8>,
-    is_first_chunk: bool,
-) -> ProgramResult {
-    let account_info_iter = &mut accounts.iter();
-    let opdata_storage_info = next_account_info(account_info_iter)?;
-    let payer_info = next_account_info(account_info_iter)?;
-    let system_program_info = next_account_info(account_info_iter)?;
-
-    // Verify system program
-    crate::utils::verify_system_program(system_program_info)?;
-
-    // Verify account ownership and permissions
-    if opdata_storage_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-    if !opdata_storage_info.is_writable {
-        return Err(QuipError::AccountNotWritable.into());
-    }
-
-    // Verify payer is signer
-    if !payer_info.is_signer {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
-
-    // Verify opdata storage derivation
-    let payer_bytes = pubkey_to_bytes(payer_info.key);
-    let _ = crate::utils::verify_opdata_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(opdata_storage_info.key))?;
-
-    let mut storage = if is_first_chunk {
-        // Initialize new storage
-        OpdataStorage {
-            is_initialized: true,
-            opdata: Vec::new(),
-        }
-    } else {
-        // Load existing storage
-        let data = opdata_storage_info.try_borrow_data()?;
-        let storage = OpdataStorage::try_from_slice(&data)
-            .map_err(|_| ProgramError::InvalidAccountData)?;
-        drop(data);
-        if !storage.is_initialized {
-            return Err(QuipError::OpdataStorageNotInitialized.into());
-        }
-        storage
-    };
-
-    // Append chunk data
-    storage.opdata.extend_from_slice(&opdata_chunk);
-
-    // Validate size
-    if storage.opdata.len() > OpdataStorage::MAX_OPDATA_SIZE {
-        return Err(QuipError::ChunkDataTooLarge.into());
-    }
-
-    // Serialize updated storage
-    let mut data = opdata_storage_info.try_borrow_mut_data()?;
-    storage.serialize(&mut &mut data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-
-    msg!("Stored opdata chunk, total size: {}", storage.opdata.len());
     Ok(())
 }
 

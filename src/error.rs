@@ -50,24 +50,6 @@ pub enum QuipError {
     #[error("Invalid instruction data format")]
     InvalidInstructionData,
 
-    #[error("Invalid chunk index")]
-    InvalidChunkIndex,
-
-    #[error("Chunk data too large")]
-    ChunkDataTooLarge,
-
-    #[error("Invalid message hash")]
-    InvalidMessageHash,
-
-    #[error("Signature storage not initialized")]
-    SignatureStorageNotInitialized,
-
-    #[error("Signature data too large")]
-    SignatureDataTooLarge,
-
-    #[error("Opdata storage not initialized")]
-    OpdataStorageNotInitialized,
-
     #[error("Unsupported recipient account type")]
     UnsupportedRecipientType,
 
