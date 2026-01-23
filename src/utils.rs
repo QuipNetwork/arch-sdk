@@ -55,16 +55,6 @@ pub fn derive_wallet_address(
     (pda.serialize(), bump)
 }
 
-/// Derive signature storage PDA address
-/// Returns (pubkey_bytes, bump)
-pub fn derive_signature_storage_address(program_id: &Pubkey, owner: &[u8; 32]) -> ([u8; 32], u8) {
-    let (pda, bump) = Pubkey::find_program_address(
-        &[b"signature", owner.as_ref()],
-        program_id,
-    );
-    (pda.serialize(), bump)
-}
-
 /// Derive opdata storage PDA address
 /// Returns (pubkey_bytes, bump)
 pub fn derive_opdata_storage_address(program_id: &Pubkey, owner: &[u8; 32]) -> ([u8; 32], u8) {
@@ -99,19 +89,6 @@ pub fn verify_wallet_address(
     account_key: &[u8; 32],
 ) -> Result<u8, ProgramError> {
     let (expected, bump) = derive_wallet_address(program_id, owner, vault_id);
-    if *account_key != expected {
-        return Err(QuipError::InvalidAccountDerivation.into());
-    }
-    Ok(bump)
-}
-
-/// Verify that an account key matches the expected signature storage address and return bump
-pub fn verify_signature_storage_address(
-    program_id: &Pubkey,
-    owner: &[u8; 32],
-    account_key: &[u8; 32],
-) -> Result<u8, ProgramError> {
-    let (expected, bump) = derive_signature_storage_address(program_id, owner);
     if *account_key != expected {
         return Err(QuipError::InvalidAccountDerivation.into());
     }

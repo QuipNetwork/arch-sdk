@@ -17,7 +17,7 @@
 
 use arch_program::utxo::UtxoMeta;
 use borsh::{BorshDeserialize, BorshSerialize};
-use crate::state::{CpiAccountMeta, WinternitzPublicKey};
+use crate::state::{CpiAccountMeta, WinternitzPublicKey, WinternitzSignature};
 
 /// All instructions supported by the Quip program
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -62,11 +62,12 @@ pub enum QuipInstruction {
     /// 2. `[writable]` Recipient
     /// 3. `[signer, writable]` Payer (must be wallet owner)
     /// 4. `[]` System program
-    /// 5. `[]` Signature storage
     TransferWithWinternitz {
         vault_id: [u8; 32],
         pq_next: WinternitzPublicKey,
         amount: u64,
+        /// WOTS+ signature
+        signature: WinternitzSignature,
     },
 
     /// Execute arbitrary CPI using WOTS+ signature
@@ -77,13 +78,14 @@ pub enum QuipInstruction {
     /// 2. `[]` Target program
     /// 3. `[signer, writable]` Payer (must be wallet owner)
     /// 4. `[]` System program
-    /// 5. `[]` Signature storage
-    /// 6. `[]` Opdata storage
-    /// 7+ `[]` Remaining accounts for CPI
+    /// 5. `[]` Opdata storage
+    /// 6+ `[]` Remaining accounts for CPI
     ExecuteWithWinternitz {
         pq_next: WinternitzPublicKey,
         vault_id: [u8; 32],
         account_metas: Vec<CpiAccountMeta>,
+        /// WOTS+ signature
+        signature: WinternitzSignature,
     },
 
     /// Change the post-quantum owner (rotate WOTS+ key)
@@ -92,22 +94,11 @@ pub enum QuipInstruction {
     /// 0. `[writable]` Factory
     /// 1. `[writable]` Wallet
     /// 2. `[signer, writable]` Payer (must be wallet owner)
-    /// 3. `[]` Signature storage
     ChangePqOwner {
         vault_id: [u8; 32],
         pq_next: WinternitzPublicKey,
-    },
-
-    /// Store signature data
-    ///
-    /// Accounts:
-    /// 0. `[writable]` Signature storage (to be created if new)
-    /// 1. `[signer, writable]` Payer
-    /// 2. `[]` System program
-    StoreSignature {
-        signature_data: Vec<u8>,
-        /// UTXO for anchoring signature storage account creation
-        sig_utxo: UtxoMeta,
+        /// WOTS+ signature
+        signature: WinternitzSignature,
     },
 
     /// Store operation data (supports chunking)

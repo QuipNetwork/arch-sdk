@@ -119,26 +119,8 @@ impl QuipWallet {
 }
 
 // =============================================================================
-// Storage Accounts (for chunked data uploads)
+// Storage Accounts (for CPI operation data)
 // =============================================================================
-
-/// Temporary storage for WOTS+ signatures
-/// Used to upload large signatures across multiple transactions
-#[derive(BorshSerialize, BorshDeserialize, Clone, Debug)]
-pub struct SignatureStorage {
-    /// Whether this storage is initialized
-    pub is_initialized: bool,
-    /// Signature data (up to 2200 bytes)
-    pub signature_data: Vec<u8>,
-}
-
-impl SignatureStorage {
-    pub const MAX_SIGNATURE_SIZE: usize = 2200;
-    pub const SPACE: usize = 1 + // is_initialized
-        4 + // Vec length prefix (Borsh uses u32)
-        Self::MAX_SIGNATURE_SIZE;
-    // = 2205 bytes
-}
 
 /// Temporary storage for instruction operation data
 /// Used to upload instruction data across multiple transactions
