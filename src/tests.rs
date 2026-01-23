@@ -24,8 +24,10 @@
 mod quip_tests {
     use arch_program::{
         account::AccountMeta,
+        compute_budget::ComputeBudgetInstruction,
         instruction::Instruction,
         pubkey::Pubkey,
+        rent::minimum_rent,
         sanitized::ArchMessage,
         system_program,
         utxo::UtxoMeta,
@@ -40,16 +42,21 @@ mod quip_tests {
 
     use crate::instruction::QuipInstruction;
     use crate::state::{
-        OpdataStorage, QuipFactory, QuipWallet, SignatureStorage,
-        WinternitzPublicKey,
+        QuipFactory, QuipWallet,
+        WinternitzPublicKey, WinternitzSignature,
     };
     use crate::utils::{
         create_change_owner_message, create_transfer_message,
-        derive_factory_address, derive_opdata_storage_address,
-        derive_signature_storage_address, derive_wallet_address,
+        derive_factory_address, derive_wallet_address,
     };
 
     const ELF_PATH: &str = "target/sbpf-solana-solana/release/quip_arch.so";
+
+    /// Compute budget for WOTS+ signature verification.
+    /// WOTS+ verification requires ~1000 keccak256 hash operations (67 chunks × ~15 hashes each).
+    /// Default compute budget is insufficient, so we request 1.4M units for operations
+    /// that involve signature verification.
+    const WOTS_COMPUTE_BUDGET: u32 = 1_400_000;
 
     // =============================================================================
     // Utility Functions (minimal, non-obfuscating)
@@ -406,8 +413,8 @@ mod quip_tests {
     #[test]
     #[serial]
     #[ignore]
-    fn test_create_wallet_with_deposit() {
-        println!("\n=== Test: Create Wallet With Deposit ===\n");
+    fn test_deposit_to_winternitz_with_deposit() {
+        println!("\n=== Test: DepositToWinternitz With Deposit ===\n");
 
         // Setup
         let mut config = Config::localnet();
@@ -491,6 +498,10 @@ mod quip_tests {
         assert!(processed_tx.status == Status::Processed);
         println!("Factory initialized successfully");
 
+        // Capture factory balance before wallet creation
+        let factory_balance_before = client.read_account_info(factory_pubkey).unwrap().lamports;
+        println!("Factory balance before wallet creation: {}", factory_balance_before);
+
         // Create wallet
         println!("\n--- Creating Wallet ---");
         let vault_id = [1u8; 32];
@@ -518,9 +529,7 @@ mod quip_tests {
             pq_to: pq_key.clone(),
             initial_deposit,
             wallet_utxo,
-            tx_hex: vec![],
         }).unwrap();
-        println!("Instruction data: {} bytes", instruction_data.len());
 
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
         let tx = build_and_sign_transaction(
@@ -569,6 +578,20 @@ mod quip_tests {
         assert_eq!(wallet.transaction_count, 0);
         println!("transaction_count: {}", wallet.transaction_count);
 
+        // Verify wallet balance received the initial deposit + rent
+        println!("\n--- Verifying Wallet Balance ---");
+        let wallet_rent = minimum_rent(QuipWallet::SPACE);
+        let expected_wallet_balance = initial_deposit + wallet_rent;
+        println!("Wallet lamports: {}", wallet_account.lamports);
+        println!("Wallet rent (for {} bytes): {}", QuipWallet::SPACE, wallet_rent);
+        println!("Expected balance (deposit + rent): {} + {} = {}", initial_deposit, wallet_rent, expected_wallet_balance);
+        assert_eq!(
+            wallet_account.lamports, expected_wallet_balance,
+            "Wallet balance {} should equal initial_deposit {} + rent {}",
+            wallet_account.lamports, initial_deposit, wallet_rent
+        );
+        println!("Wallet balance: {} (equals initial_deposit + rent)", wallet_account.lamports);
+
         // Verify factory state
         println!("\n--- Verifying Factory State ---");
         let factory_account = client.read_account_info(factory_pubkey).unwrap();
@@ -580,14 +603,29 @@ mod quip_tests {
         assert_eq!(factory.accumulated_fees, creation_fee);
         println!("accumulated_fees: {}", factory.accumulated_fees);
 
-        println!("\n=== Test PASSED: Create Wallet With Deposit ===\n");
+        // Verify factory balance increased by exactly creation_fee
+        println!("\n--- Verifying Factory Balance ---");
+        let factory_balance_after = factory_account.lamports;
+        let factory_balance_increase = factory_balance_after - factory_balance_before;
+        println!("Factory balance before: {}", factory_balance_before);
+        println!("Factory balance after: {}", factory_balance_after);
+        println!("Factory balance increase: {}", factory_balance_increase);
+        println!("Expected creation_fee: {}", creation_fee);
+        assert_eq!(
+            factory_balance_increase, creation_fee,
+            "Factory balance increase {} should equal creation_fee {}",
+            factory_balance_increase, creation_fee
+        );
+        println!("Factory balance increase: {} (equals creation_fee)", factory_balance_increase);
+
+        println!("\n=== Test PASSED: DepositToWinternitz With Deposit ===\n");
     }
 
     #[test]
     #[serial]
     #[ignore]
-    fn test_create_wallet_no_deposit() {
-        println!("\n=== Test: Create Wallet No Deposit ===\n");
+    fn test_deposit_to_winternitz_no_deposit() {
+        println!("\n=== Test: DepositToWinternitz No Deposit ===\n");
 
         // Setup
         let mut config = Config::localnet();
@@ -684,7 +722,6 @@ mod quip_tests {
             pq_to: pq_key.clone(),
             initial_deposit: 0, // No deposit
             wallet_utxo,
-            tx_hex: vec![],
         }).unwrap();
 
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
@@ -719,14 +756,14 @@ mod quip_tests {
         assert!(wallet.is_initialized);
         println!("Wallet initialized: {}", wallet.is_initialized);
 
-        println!("\n=== Test PASSED: Create Wallet No Deposit ===\n");
+        println!("\n=== Test PASSED: DepositToWinternitz No Deposit ===\n");
     }
 
     #[test]
     #[serial]
     #[ignore]
-    fn test_create_wallet_duplicate() {
-        println!("\n=== Test: Create Wallet Duplicate ===\n");
+    fn test_deposit_to_winternitz_topup() {
+        println!("\n=== Test: DepositToWinternitz Topup ===\n");
 
         // Setup
         let mut config = Config::localnet();
@@ -737,7 +774,7 @@ mod quip_tests {
         // Generate keypairs
         let (authority_keypair, _, _) = generate_new_keypair(config.network);
         let (program_keypair, _, _) = generate_new_keypair(config.network);
-            
+
         let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
         let (payer_keypair, payer_pubkey, _) = generate_new_keypair(config.network);
         let (_owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
@@ -801,10 +838,11 @@ mod quip_tests {
         client.wait_for_processed_transaction(&txid).unwrap();
         println!("Factory initialized");
 
-        // Create first wallet
-        println!("\n--- Creating First Wallet ---");
+        // Create wallet with initial deposit
+        println!("\n--- Creating Wallet ---");
         let vault_id = [3u8; 32];
         let (pq_key, _) = generate_wots_keypair(3);
+        let initial_deposit: u64 = 2000;
 
         let owner_bytes = owner_pubkey.serialize();
         let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
@@ -820,9 +858,8 @@ mod quip_tests {
             vault_id,
             to: owner_bytes,
             pq_to: pq_key.clone(),
-            initial_deposit: 1000,
+            initial_deposit,
             wallet_utxo,
-            tx_hex: vec![],
         }).unwrap();
 
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
@@ -849,23 +886,36 @@ mod quip_tests {
         let txid = client.send_transaction(tx).unwrap();
         let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
         assert!(processed_tx.status == Status::Processed);
-        println!("First wallet created");
+        println!("Wallet created with initial deposit: {}", initial_deposit);
 
-        // Attempt duplicate wallet creation
-        println!("\n--- Creating Duplicate Wallet (should fail) ---");
-        let (wallet_txid2, wallet_vout2) = helper.send_utxo(wallet_pubkey).unwrap();
-        let wallet_utxo2 = UtxoMeta::from(
-            hex::decode(&wallet_txid2).unwrap().try_into().unwrap(),
-            wallet_vout2,
+        // Record state after wallet creation
+        let wallet_account = client.read_account_info(wallet_pubkey).unwrap();
+        let wallet_before = QuipWallet::try_from_slice(&wallet_account.data).unwrap();
+        let balance_before = wallet_account.lamports;
+        println!("Wallet balance after creation: {}", balance_before);
+
+        let factory_account = client.read_account_info(factory_pubkey).unwrap();
+        let factory_before = QuipFactory::try_from_slice(&factory_account.data).unwrap();
+        println!("Factory total_wallets: {}", factory_before.total_wallets);
+        println!("Factory accumulated_fees: {}", factory_before.accumulated_fees);
+
+        // Topup wallet
+        println!("\n--- Topping Up Wallet ---");
+        let topup_amount: u64 = 3000;
+
+        // For topup, we still need a UTXO but it won't be used for account creation
+        let (topup_txid, topup_vout) = helper.send_utxo(wallet_pubkey).unwrap();
+        let topup_utxo = UtxoMeta::from(
+            hex::decode(&topup_txid).unwrap().try_into().unwrap(),
+            topup_vout,
         );
 
         let instruction_data2 = borsh::to_vec(&QuipInstruction::DepositToWinternitz {
             vault_id,
             to: owner_bytes,
-            pq_to: pq_key,
-            initial_deposit: 1000,
-            wallet_utxo: wallet_utxo2,
-            tx_hex: vec![],
+            pq_to: pq_key.clone(),
+            initial_deposit: topup_amount,
+            wallet_utxo: topup_utxo,
         }).unwrap();
 
         let recent_blockhash2 = client.get_best_finalized_block_hash().unwrap();
@@ -891,40 +941,75 @@ mod quip_tests {
 
         let txid2 = client.send_transaction(tx2).unwrap();
         let processed_tx2 = client.wait_for_processed_transaction(&txid2).unwrap();
-        println!("Duplicate wallet status: {:?}", processed_tx2.status);
+        println!("Topup transaction status: {:?}", processed_tx2.status);
+        assert!(processed_tx2.status == Status::Processed, "Topup should succeed");
 
-        assert!(
-            matches!(processed_tx2.status, Status::Failed(_)),
-            "Duplicate wallet creation should fail"
+        // Verify wallet state after topup
+        println!("\n--- Verifying Wallet After Topup ---");
+        let wallet_account_after = client.read_account_info(wallet_pubkey).unwrap();
+        let wallet_after = QuipWallet::try_from_slice(&wallet_account_after.data).unwrap();
+        let balance_after = wallet_account_after.lamports;
+
+        // Balance should increase by topup amount
+        println!("Balance before: {}, after: {}", balance_before, balance_after);
+        assert_eq!(
+            balance_after,
+            balance_before + topup_amount,
+            "Wallet balance should increase by topup amount"
         );
 
-        println!("\n=== Test PASSED: Create Wallet Duplicate ===\n");
-    }
+        // Wallet state should remain unchanged
+        assert_eq!(wallet_after.owner, wallet_before.owner, "Owner should remain the same");
+        assert_eq!(wallet_after.pq_owner, wallet_before.pq_owner, "PQ owner should remain the same");
+        assert_eq!(wallet_after.transaction_count, wallet_before.transaction_count, "Transaction count should remain the same");
+        println!("Wallet state unchanged: owner, pq_owner, transaction_count all match");
 
-    // =============================================================================
-    // Storage Tests
-    // =============================================================================
+        // Verify factory state after topup
+        println!("\n--- Verifying Factory After Topup ---");
+        let factory_account_after = client.read_account_info(factory_pubkey).unwrap();
+        let factory_after = QuipFactory::try_from_slice(&factory_account_after.data).unwrap();
+
+        // total_wallets should remain the same (no new wallet created)
+        assert_eq!(
+            factory_after.total_wallets,
+            factory_before.total_wallets,
+            "Total wallets should remain the same (no new wallet created)"
+        );
+        println!("Factory total_wallets unchanged: {}", factory_after.total_wallets);
+
+        // accumulated_fees should remain the same (no creation fee charged for topup)
+        assert_eq!(
+            factory_after.accumulated_fees,
+            factory_before.accumulated_fees,
+            "Accumulated fees should remain the same (no creation fee for topup)"
+        );
+        println!("Factory accumulated_fees unchanged: {}", factory_after.accumulated_fees);
+
+        println!("\n=== Test PASSED: DepositToWinternitz Topup ===\n");
+    }
 
     #[test]
     #[serial]
     #[ignore]
-    fn test_store_signature_single_chunk() {
-        println!("\n=== Test: Store Signature Single Chunk ===\n");
+    fn test_deposit_to_winternitz_multiple_wallets_same_owner() {
+        println!("\n=== Test: DepositToWinternitz Multiple Wallets Same Owner ===\n");
 
         // Setup
         let mut config = Config::localnet();
         config.titan_url = "http://127.0.0.1:8080".to_string();
         let client = ArchRpcClient::new(&config);
+        let helper = BitcoinHelper::new(&config);
 
         // Generate keypairs
         let (authority_keypair, _, _) = generate_new_keypair(config.network);
         let (program_keypair, _, _) = generate_new_keypair(config.network);
-            
-        let (_owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
-        let (payer_keypair, payer_pubkey, _) = generate_new_keypair(config.network);
 
-        println!("Owner: {}", owner_pubkey);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
+        let (payer_keypair, payer_pubkey, _) = generate_new_keypair(config.network);
+        let (_owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
+
         println!("Payer: {}", payer_pubkey);
+        println!("Owner: {}", owner_pubkey);
 
         // Fund and deploy
         client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
@@ -941,20 +1026,23 @@ mod quip_tests {
             .unwrap();
         println!("Program deployed at: {}", program_pubkey);
 
-        // Derive signature storage PDA
-        let owner_bytes = owner_pubkey.serialize();
-        let (storage_bytes, storage_bump) = derive_signature_storage_address(&program_pubkey, &owner_bytes);
-        let storage_pubkey = Pubkey::from_slice(&storage_bytes);
-        println!("Signature storage PDA: {} (bump: {})", storage_pubkey, storage_bump);
+        // Initialize factory
+        let (factory_bytes, _) = derive_factory_address(&program_pubkey);
+        let factory_pubkey = Pubkey::from_slice(&factory_bytes);
 
-        // Store signature (single chunk)
-        println!("\n--- Storing Signature ---");
-        let signature_data = vec![0xABu8; 500];
-        println!("Signature data size: {} bytes", signature_data.len());
+        let (factory_txid, factory_vout) = helper.send_utxo(factory_pubkey).unwrap();
+        let factory_utxo = UtxoMeta::from(
+            hex::decode(&factory_txid).unwrap().try_into().unwrap(),
+            factory_vout,
+        );
 
-        let instruction_data = borsh::to_vec(&QuipInstruction::StoreSignature {
-            chunk_data: signature_data.clone(),
-            is_first_chunk: true,
+        let creation_fee: u64 = 1000;
+        let instruction_data = borsh::to_vec(&QuipInstruction::InitializeFactory {
+            admin: admin_pubkey.serialize(),
+            creation_fee,
+            transfer_fee: 500,
+            execute_fee: 750,
+            factory_utxo,
         }).unwrap();
 
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
@@ -963,7 +1051,7 @@ mod quip_tests {
                 &[Instruction {
                     program_id: program_pubkey,
                     accounts: vec![
-                        AccountMeta { pubkey: storage_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
                         AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
                         AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
                     ],
@@ -972,267 +1060,94 @@ mod quip_tests {
                 Some(payer_pubkey),
                 recent_blockhash,
             ),
-            vec![payer_keypair],
+            vec![payer_keypair.clone()],
             config.network,
         ).unwrap();
 
         let txid = client.send_transaction(tx).unwrap();
-        println!("Transaction sent: {}", txid);
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Factory initialized");
 
+        let owner_bytes = owner_pubkey.serialize();
+
+        // Create first wallet with vault_id_1
+        println!("\n--- Creating First Wallet (vault_id_1) ---");
+        let vault_id_1 = [1u8; 32];
+        let (pq_key_1, _) = generate_wots_keypair(100);
+        let initial_deposit_1: u64 = 5000;
+
+        let (wallet_bytes_1, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id_1);
+        let wallet_pubkey_1 = Pubkey::from_slice(&wallet_bytes_1);
+        println!("Wallet 1 PDA: {}", wallet_pubkey_1);
+
+        let (wallet_txid_1, wallet_vout_1) = helper.send_utxo(wallet_pubkey_1).unwrap();
+        let wallet_utxo_1 = UtxoMeta::from(
+            hex::decode(&wallet_txid_1).unwrap().try_into().unwrap(),
+            wallet_vout_1,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::DepositToWinternitz {
+            vault_id: vault_id_1,
+            to: owner_bytes,
+            pq_to: pq_key_1.clone(),
+            initial_deposit: initial_deposit_1,
+            wallet_utxo: wallet_utxo_1,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: wallet_pubkey_1, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: false, is_writable: false },
+                        AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(payer_pubkey),
+                recent_blockhash,
+            ),
+            vec![payer_keypair.clone()],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
         let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
-        println!("Transaction status: {:?}", processed_tx.status);
         assert!(processed_tx.status == Status::Processed);
+        println!("Wallet 1 created with deposit {}", initial_deposit_1);
 
-        // Verify storage state
-        println!("\n--- Verifying Storage State ---");
-        let storage_account = client.read_account_info(storage_pubkey).unwrap();
-        println!("Storage account data: {} bytes", storage_account.data.len());
+        // Create second wallet with vault_id_2 for the same owner
+        println!("\n--- Creating Second Wallet (vault_id_2) ---");
+        let vault_id_2 = [2u8; 32];
+        let (pq_key_2, _) = generate_wots_keypair(200);
+        let initial_deposit_2: u64 = 8000;
 
-        let storage = SignatureStorage::try_from_slice(&storage_account.data).unwrap();
-        assert!(storage.is_initialized);
-        println!("is_initialized: {}", storage.is_initialized);
+        let (wallet_bytes_2, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id_2);
+        let wallet_pubkey_2 = Pubkey::from_slice(&wallet_bytes_2);
+        println!("Wallet 2 PDA: {}", wallet_pubkey_2);
 
-        assert_eq!(storage.signature_data, signature_data);
-        println!("signature_data: matches ({} bytes)", storage.signature_data.len());
-
-        println!("\n=== Test PASSED: Store Signature Single Chunk ===\n");
-    }
-
-    #[test]
-    #[serial]
-    #[ignore]
-    fn test_store_signature_multiple_chunks() {
-        println!("\n=== Test: Store Signature Multiple Chunks ===\n");
-
-        // Setup
-        let mut config = Config::localnet();
-        config.titan_url = "http://127.0.0.1:8080".to_string();
-        let client = ArchRpcClient::new(&config);
-
-        // Generate keypairs
-        let (authority_keypair, _, _) = generate_new_keypair(config.network);
-        let (program_keypair, _, _) = generate_new_keypair(config.network);
-            
-        let (_owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
-        let (payer_keypair, payer_pubkey, _) = generate_new_keypair(config.network);
-
-        println!("Owner: {}", owner_pubkey);
-        println!("Payer: {}", payer_pubkey);
-
-        // Fund and deploy
-        client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
-        client.create_and_fund_account_with_faucet(&payer_keypair).unwrap();
-
-        let deployer = ProgramDeployer::new(&config);
-        let program_pubkey = deployer
-            .try_deploy_program(
-                "quip-arch".to_string(),
-                program_keypair,
-                authority_keypair,
-                &ELF_PATH.to_string(),
-            )
-            .unwrap();
-        println!("Program deployed at: {}", program_pubkey);
-
-        // Derive signature storage PDA
-        let owner_bytes = owner_pubkey.serialize();
-        let (storage_bytes, _) = derive_signature_storage_address(&program_pubkey, &owner_bytes);
-        let storage_pubkey = Pubkey::from_slice(&storage_bytes);
-        println!("Signature storage PDA: {}", storage_pubkey);
-
-        // Store signature in multiple chunks
-        println!("\n--- Storing Signature (multiple chunks) ---");
-        let signature_data = vec![0xCDu8; 2000];
-        println!("Total signature data size: {} bytes", signature_data.len());
-
-        const MAX_CHUNK_SIZE: usize = 900;
-        let chunks: Vec<&[u8]> = signature_data.chunks(MAX_CHUNK_SIZE).collect();
-        println!("Number of chunks: {}", chunks.len());
-
-        for (i, chunk) in chunks.iter().enumerate() {
-            let is_first_chunk = i == 0;
-            println!("Sending chunk {} ({} bytes, is_first: {})", i, chunk.len(), is_first_chunk);
-
-            let instruction_data = borsh::to_vec(&QuipInstruction::StoreSignature {
-                chunk_data: chunk.to_vec(),
-                is_first_chunk,
-            }).unwrap();
-
-            let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
-            let tx = build_and_sign_transaction(
-                ArchMessage::new(
-                    &[Instruction {
-                        program_id: program_pubkey,
-                        accounts: vec![
-                            AccountMeta { pubkey: storage_pubkey, is_signer: false, is_writable: true },
-                            AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
-                            AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                        ],
-                        data: instruction_data,
-                    }],
-                    Some(payer_pubkey),
-                    recent_blockhash,
-                ),
-                vec![payer_keypair.clone()],
-                config.network,
-            ).unwrap();
-
-            let txid = client.send_transaction(tx).unwrap();
-            let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
-            println!("Chunk {} status: {:?}", i, processed_tx.status);
-            assert!(processed_tx.status == Status::Processed);
-        }
-
-        // Verify storage state
-        println!("\n--- Verifying Storage State ---");
-        let storage_account = client.read_account_info(storage_pubkey).unwrap();
-        let storage = SignatureStorage::try_from_slice(&storage_account.data).unwrap();
-
-        assert!(storage.is_initialized);
-        println!("is_initialized: {}", storage.is_initialized);
-
-        assert_eq!(storage.signature_data, signature_data);
-        println!("signature_data: matches ({} bytes)", storage.signature_data.len());
-
-        println!("\n=== Test PASSED: Store Signature Multiple Chunks ===\n");
-    }
-
-    #[test]
-    #[serial]
-    #[ignore]
-    fn test_store_signature_too_large() {
-        println!("\n=== Test: Store Signature Too Large ===\n");
-
-        // Setup
-        let mut config = Config::localnet();
-        config.titan_url = "http://127.0.0.1:8080".to_string();
-        let client = ArchRpcClient::new(&config);
-
-        // Generate keypairs
-        let (authority_keypair, _, _) = generate_new_keypair(config.network);
-        let (program_keypair, _, _) = generate_new_keypair(config.network);
-            
-        let (_owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
-        let (payer_keypair, payer_pubkey, _) = generate_new_keypair(config.network);
-
-        println!("Owner: {}", owner_pubkey);
-        println!("Payer: {}", payer_pubkey);
-
-        // Fund and deploy
-        client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
-        client.create_and_fund_account_with_faucet(&payer_keypair).unwrap();
-
-        let deployer = ProgramDeployer::new(&config);
-        let program_pubkey = deployer
-            .try_deploy_program(
-                "quip-arch".to_string(),
-                program_keypair,
-                authority_keypair,
-                &ELF_PATH.to_string(),
-            )
-            .unwrap();
-        println!("Program deployed at: {}", program_pubkey);
-
-        // Derive signature storage PDA
-        let owner_bytes = owner_pubkey.serialize();
-        let (storage_bytes, _) = derive_signature_storage_address(&program_pubkey, &owner_bytes);
-        let storage_pubkey = Pubkey::from_slice(&storage_bytes);
-        println!("Signature storage PDA: {}", storage_pubkey);
-
-        // Attempt to store oversized signature
-        println!("\n--- Attempting to Store Oversized Signature ---");
-        let oversized_data = vec![0xEFu8; SignatureStorage::MAX_SIGNATURE_SIZE + 100];
-        println!("Oversized data size: {} bytes (max: {})",
-            oversized_data.len(), SignatureStorage::MAX_SIGNATURE_SIZE);
-
-        let instruction_data = borsh::to_vec(&QuipInstruction::StoreSignature {
-            chunk_data: oversized_data,
-            is_first_chunk: true,
-        }).unwrap();
-
-        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
-        let tx = build_and_sign_transaction(
-            ArchMessage::new(
-                &[Instruction {
-                    program_id: program_pubkey,
-                    accounts: vec![
-                        AccountMeta { pubkey: storage_pubkey, is_signer: false, is_writable: true },
-                        AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
-                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                    ],
-                    data: instruction_data,
-                }],
-                Some(payer_pubkey),
-                recent_blockhash,
-            ),
-            vec![payer_keypair],
-            config.network,
-        ).unwrap();
-
-        let txid = client.send_transaction(tx).unwrap();
-        println!("Transaction sent: {}", txid);
-
-        let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
-        println!("Transaction status: {:?}", processed_tx.status);
-
-        assert!(
-            matches!(processed_tx.status, Status::Failed(_)),
-            "Oversized signature should be rejected"
+        // Verify the two wallet PDAs are different
+        assert_ne!(
+            wallet_pubkey_1, wallet_pubkey_2,
+            "Different vault_ids should produce different wallet PDAs"
         );
 
-        println!("\n=== Test PASSED: Store Signature Too Large ===\n");
-    }
+        let (wallet_txid_2, wallet_vout_2) = helper.send_utxo(wallet_pubkey_2).unwrap();
+        let wallet_utxo_2 = UtxoMeta::from(
+            hex::decode(&wallet_txid_2).unwrap().try_into().unwrap(),
+            wallet_vout_2,
+        );
 
-    #[test]
-    #[serial]
-    #[ignore]
-    fn test_store_opdata_single_chunk() {
-        println!("\n=== Test: Store Opdata Single Chunk ===\n");
-
-        // Setup
-        let mut config = Config::localnet();
-        config.titan_url = "http://127.0.0.1:8080".to_string();
-        let client = ArchRpcClient::new(&config);
-
-        // Generate keypairs
-        let (authority_keypair, _, _) = generate_new_keypair(config.network);
-        let (program_keypair, _, _) = generate_new_keypair(config.network);
-            
-        let (_owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
-        let (payer_keypair, payer_pubkey, _) = generate_new_keypair(config.network);
-
-        println!("Owner: {}", owner_pubkey);
-        println!("Payer: {}", payer_pubkey);
-
-        // Fund and deploy
-        client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
-        client.create_and_fund_account_with_faucet(&payer_keypair).unwrap();
-
-        let deployer = ProgramDeployer::new(&config);
-        let program_pubkey = deployer
-            .try_deploy_program(
-                "quip-arch".to_string(),
-                program_keypair,
-                authority_keypair,
-                &ELF_PATH.to_string(),
-            )
-            .unwrap();
-        println!("Program deployed at: {}", program_pubkey);
-
-        // Derive opdata storage PDA
-        let owner_bytes = owner_pubkey.serialize();
-        let (storage_bytes, storage_bump) = derive_opdata_storage_address(&program_pubkey, &owner_bytes);
-        let storage_pubkey = Pubkey::from_slice(&storage_bytes);
-        println!("Opdata storage PDA: {} (bump: {})", storage_pubkey, storage_bump);
-
-        // Store opdata
-        println!("\n--- Storing Opdata ---");
-        let opdata = vec![0x12u8; 500];
-        println!("Opdata size: {} bytes", opdata.len());
-
-        let instruction_data = borsh::to_vec(&QuipInstruction::StoreOpdata {
-            opdata_chunk: opdata.clone(),
-            is_first_chunk: true,
+        let instruction_data = borsh::to_vec(&QuipInstruction::DepositToWinternitz {
+            vault_id: vault_id_2,
+            to: owner_bytes,
+            pq_to: pq_key_2.clone(),
+            initial_deposit: initial_deposit_2,
+            wallet_utxo: wallet_utxo_2,
         }).unwrap();
 
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
@@ -1241,7 +1156,9 @@ mod quip_tests {
                 &[Instruction {
                     program_id: program_pubkey,
                     accounts: vec![
-                        AccountMeta { pubkey: storage_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: wallet_pubkey_2, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: false, is_writable: false },
                         AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
                         AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
                     ],
@@ -1255,110 +1172,54 @@ mod quip_tests {
         ).unwrap();
 
         let txid = client.send_transaction(tx).unwrap();
-        println!("Transaction sent: {}", txid);
-
         let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
-        println!("Transaction status: {:?}", processed_tx.status);
         assert!(processed_tx.status == Status::Processed);
+        println!("Wallet 2 created with deposit {}", initial_deposit_2);
 
-        // Verify storage state
-        println!("\n--- Verifying Storage State ---");
-        let storage_account = client.read_account_info(storage_pubkey).unwrap();
-        let storage = OpdataStorage::try_from_slice(&storage_account.data).unwrap();
+        // Verify both wallets exist and have correct state
+        println!("\n--- Verifying Both Wallets ---");
 
-        assert!(storage.is_initialized);
-        println!("is_initialized: {}", storage.is_initialized);
-
-        assert_eq!(storage.opdata, opdata);
-        println!("opdata: matches ({} bytes)", storage.opdata.len());
-
-        println!("\n=== Test PASSED: Store Opdata Single Chunk ===\n");
-    }
-
-    #[test]
-    #[serial]
-    #[ignore]
-    fn test_store_opdata_too_large() {
-        println!("\n=== Test: Store Opdata Too Large ===\n");
-
-        // Setup
-        let mut config = Config::localnet();
-        config.titan_url = "http://127.0.0.1:8080".to_string();
-        let client = ArchRpcClient::new(&config);
-
-        // Generate keypairs
-        let (authority_keypair, _, _) = generate_new_keypair(config.network);
-        let (program_keypair, _, _) = generate_new_keypair(config.network);
-            
-        let (_owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
-        let (payer_keypair, payer_pubkey, _) = generate_new_keypair(config.network);
-
-        println!("Owner: {}", owner_pubkey);
-        println!("Payer: {}", payer_pubkey);
-
-        // Fund and deploy
-        client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
-        client.create_and_fund_account_with_faucet(&payer_keypair).unwrap();
-
-        let deployer = ProgramDeployer::new(&config);
-        let program_pubkey = deployer
-            .try_deploy_program(
-                "quip-arch".to_string(),
-                program_keypair,
-                authority_keypair,
-                &ELF_PATH.to_string(),
-            )
-            .unwrap();
-        println!("Program deployed at: {}", program_pubkey);
-
-        // Derive opdata storage PDA
-        let owner_bytes = owner_pubkey.serialize();
-        let (storage_bytes, _) = derive_opdata_storage_address(&program_pubkey, &owner_bytes);
-        let storage_pubkey = Pubkey::from_slice(&storage_bytes);
-        println!("Opdata storage PDA: {}", storage_pubkey);
-
-        // Attempt to store oversized opdata
-        println!("\n--- Attempting to Store Oversized Opdata ---");
-        let oversized_data = vec![0x34u8; OpdataStorage::MAX_OPDATA_SIZE + 100];
-        println!("Oversized data size: {} bytes (max: {})",
-            oversized_data.len(), OpdataStorage::MAX_OPDATA_SIZE);
-
-        let instruction_data = borsh::to_vec(&QuipInstruction::StoreOpdata {
-            opdata_chunk: oversized_data,
-            is_first_chunk: true,
-        }).unwrap();
-
-        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
-        let tx = build_and_sign_transaction(
-            ArchMessage::new(
-                &[Instruction {
-                    program_id: program_pubkey,
-                    accounts: vec![
-                        AccountMeta { pubkey: storage_pubkey, is_signer: false, is_writable: true },
-                        AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
-                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                    ],
-                    data: instruction_data,
-                }],
-                Some(payer_pubkey),
-                recent_blockhash,
-            ),
-            vec![payer_keypair],
-            config.network,
-        ).unwrap();
-
-        let txid = client.send_transaction(tx).unwrap();
-        println!("Transaction sent: {}", txid);
-
-        let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
-        println!("Transaction status: {:?}", processed_tx.status);
-
-        assert!(
-            matches!(processed_tx.status, Status::Failed(_)),
-            "Oversized opdata should be rejected"
+        let wallet_account_1 = client.read_account_info(wallet_pubkey_1).unwrap();
+        let wallet_1 = QuipWallet::try_from_slice(&wallet_account_1.data).unwrap();
+        assert!(wallet_1.is_initialized);
+        assert_eq!(wallet_1.owner, owner_bytes);
+        assert_eq!(wallet_1.pq_owner.public_seed, pq_key_1.public_seed);
+        assert_eq!(wallet_1.pq_owner.public_key_hash, pq_key_1.public_key_hash);
+        let wallet_rent = minimum_rent(QuipWallet::SPACE);
+        let expected_balance_1 = initial_deposit_1 + wallet_rent;
+        assert_eq!(
+            wallet_account_1.lamports, expected_balance_1,
+            "Wallet 1 balance {} should equal deposit {} + rent {}",
+            wallet_account_1.lamports, initial_deposit_1, wallet_rent
         );
+        println!("Wallet 1: initialized, owner matches, pq_key matches, balance={}", wallet_account_1.lamports);
 
-        println!("\n=== Test PASSED: Store Opdata Too Large ===\n");
+        let wallet_account_2 = client.read_account_info(wallet_pubkey_2).unwrap();
+        let wallet_2 = QuipWallet::try_from_slice(&wallet_account_2.data).unwrap();
+        assert!(wallet_2.is_initialized);
+        assert_eq!(wallet_2.owner, owner_bytes);
+        assert_eq!(wallet_2.pq_owner.public_seed, pq_key_2.public_seed);
+        assert_eq!(wallet_2.pq_owner.public_key_hash, pq_key_2.public_key_hash);
+        let expected_balance_2 = initial_deposit_2 + wallet_rent;
+        assert_eq!(
+            wallet_account_2.lamports, expected_balance_2,
+            "Wallet 2 balance {} should equal deposit {} + rent {}",
+            wallet_account_2.lamports, initial_deposit_2, wallet_rent
+        );
+        println!("Wallet 2: initialized, owner matches, pq_key matches, balance={}", wallet_account_2.lamports);
+
+        // Verify factory tracked both wallet creations
+        let factory_account = client.read_account_info(factory_pubkey).unwrap();
+        let factory = QuipFactory::try_from_slice(&factory_account.data).unwrap();
+        assert_eq!(factory.total_wallets, 2, "Factory should have created 2 wallets");
+        assert_eq!(
+            factory.accumulated_fees, creation_fee * 2,
+            "Factory accumulated_fees {} should equal creation_fee * 2 = {}",
+            factory.accumulated_fees, creation_fee * 2
+        );
+        println!("Factory: total_wallets=2, accumulated_fees={}", factory.accumulated_fees);
+
+        println!("\n=== Test PASSED: DepositToWinternitz Multiple Wallets Same Owner ===\n");
     }
 
     // =============================================================================
@@ -1383,7 +1244,7 @@ mod quip_tests {
             
         let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
         let (owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
-        let (_recipient_keypair, recipient_pubkey, _) = generate_new_keypair(config.network);
+        let (recipient_keypair, recipient_pubkey, _) = generate_new_keypair(config.network);
 
         println!("Owner: {}", owner_pubkey);
         println!("Recipient: {}", recipient_pubkey);
@@ -1391,7 +1252,8 @@ mod quip_tests {
         // Fund accounts
         client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
         client.create_and_fund_account_with_faucet(&owner_keypair).unwrap();
-        println!("Funded authority and owner accounts");
+        client.create_and_fund_account_with_faucet(&recipient_keypair).unwrap();
+        println!("Funded authority, owner, and recipient accounts");
 
         // Deploy program
         let deployer = ProgramDeployer::new(&config);
@@ -1472,7 +1334,6 @@ mod quip_tests {
             pq_to: pq_key.clone(),
             initial_deposit,
             wallet_utxo,
-            tx_hex: vec![],
         }).unwrap();
 
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
@@ -1500,44 +1361,21 @@ mod quip_tests {
         client.wait_for_processed_transaction(&txid).unwrap();
         println!("Wallet created with {} deposit", initial_deposit);
 
-        // Create and store signature
-        println!("\n--- Storing Signature ---");
+        // Capture balances before transfer
+        let wallet_balance_before = client.read_account_info(wallet_pubkey).unwrap().lamports;
+        let factory_balance_before = client.read_account_info(factory_pubkey).unwrap().lamports;
+        let recipient_balance_before = client.read_account_info(recipient_pubkey).unwrap().lamports;
+        println!("Wallet balance before transfer: {}", wallet_balance_before);
+        println!("Factory balance before transfer: {}", factory_balance_before);
+        println!("Recipient balance before transfer: {}", recipient_balance_before);
+
+        // Create signature for transfer
+        println!("\n--- Creating Signature ---");
         let transfer_amount: u64 = 2000;
         let recipient_bytes = recipient_pubkey.serialize();
         let message = create_transfer_message(&pq_key, &pq_next, &recipient_bytes, transfer_amount);
         let signature_data = sign_message(&private_key, &message);
         println!("Signature created: {} bytes", signature_data.len());
-
-        let (sig_storage_bytes, _) = derive_signature_storage_address(&program_pubkey, &owner_bytes);
-        let signature_storage_pubkey = Pubkey::from_slice(&sig_storage_bytes);
-
-        let instruction_data = borsh::to_vec(&QuipInstruction::StoreSignature {
-            chunk_data: signature_data,
-            is_first_chunk: true,
-        }).unwrap();
-
-        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
-        let tx = build_and_sign_transaction(
-            ArchMessage::new(
-                &[Instruction {
-                    program_id: program_pubkey,
-                    accounts: vec![
-                        AccountMeta { pubkey: signature_storage_pubkey, is_signer: false, is_writable: true },
-                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
-                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                    ],
-                    data: instruction_data,
-                }],
-                Some(owner_pubkey),
-                recent_blockhash,
-            ),
-            vec![owner_keypair.clone()],
-            config.network,
-        ).unwrap();
-
-        let txid = client.send_transaction(tx).unwrap();
-        client.wait_for_processed_transaction(&txid).unwrap();
-        println!("Signature stored at: {}", signature_storage_pubkey);
 
         // Execute transfer
         println!("\n--- Executing Transfer ---");
@@ -1548,24 +1386,29 @@ mod quip_tests {
             vault_id,
             pq_next: pq_next.clone(),
             amount: transfer_amount,
-            tx_hex: vec![],
+            signature: WinternitzSignature { signature_data },
         }).unwrap();
+
+        // Request higher compute budget for WOTS+ signature verification
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
         let tx = build_and_sign_transaction(
             ArchMessage::new(
-                &[Instruction {
-                    program_id: program_pubkey,
-                    accounts: vec![
-                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
-                        AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
-                        AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
-                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
-                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                        AccountMeta { pubkey: signature_storage_pubkey, is_signer: false, is_writable: false },
-                    ],
-                    data: instruction_data,
-                }],
+                &[
+                    compute_budget_ix,
+                    Instruction {
+                        program_id: program_pubkey,
+                        accounts: vec![
+                            AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                            AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                        ],
+                        data: instruction_data,
+                    },
+                ],
                 Some(owner_pubkey),
                 recent_blockhash,
             ),
@@ -1591,6 +1434,41 @@ mod quip_tests {
 
         assert_eq!(wallet.transaction_count, 1);
         println!("transaction_count: {}", wallet.transaction_count);
+
+        // Verify balance changes
+        println!("\n--- Verifying Balances ---");
+        let wallet_balance_after = wallet_account.lamports;
+        let factory_balance_after = client.read_account_info(factory_pubkey).unwrap().lamports;
+        let recipient_balance_after = client.read_account_info(recipient_pubkey).unwrap().lamports;
+
+        // Wallet should have decreased by transfer_amount + transfer_fee
+        let expected_wallet_decrease = transfer_amount + transfer_fee;
+        let actual_wallet_decrease = wallet_balance_before - wallet_balance_after;
+        assert_eq!(
+            actual_wallet_decrease, expected_wallet_decrease,
+            "Wallet balance decrease {} should equal transfer_amount {} + transfer_fee {}",
+            actual_wallet_decrease, transfer_amount, transfer_fee
+        );
+        println!("Wallet balance decreased by: {} (transfer {} + fee {})",
+            actual_wallet_decrease, transfer_amount, transfer_fee);
+
+        // Factory should have increased by transfer_fee
+        let factory_balance_increase = factory_balance_after - factory_balance_before;
+        assert_eq!(
+            factory_balance_increase, transfer_fee,
+            "Factory balance increase {} should equal transfer_fee {}",
+            factory_balance_increase, transfer_fee
+        );
+        println!("Factory balance increased by: {} (fee)", factory_balance_increase);
+
+        // Recipient should have increased by transfer_amount
+        let recipient_balance_increase = recipient_balance_after - recipient_balance_before;
+        assert_eq!(
+            recipient_balance_increase, transfer_amount,
+            "Recipient balance increase {} should equal transfer_amount {}",
+            recipient_balance_increase, transfer_amount
+        );
+        println!("Recipient balance increased by: {} (received transfer)", recipient_balance_increase);
 
         println!("\n=== Test PASSED: Transfer Success ===\n");
     }
@@ -1694,7 +1572,6 @@ mod quip_tests {
             pq_to: pq_key.clone(),
             initial_deposit: 10000,
             wallet_utxo,
-            tx_hex: vec![],
         }).unwrap();
 
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
@@ -1722,41 +1599,10 @@ mod quip_tests {
         client.wait_for_processed_transaction(&txid).unwrap();
         println!("Wallet created");
 
-        // Store INVALID signature (random data)
-        println!("\n--- Storing Invalid Signature ---");
+        // Create INVALID signature (random data)
+        println!("\n--- Creating Invalid Signature ---");
         let invalid_signature = vec![0xFFu8; 2112]; // WOTS+ signature size but random data
         println!("Invalid signature size: {} bytes", invalid_signature.len());
-
-        let (sig_storage_bytes, _) = derive_signature_storage_address(&program_pubkey, &owner_bytes);
-        let signature_storage_pubkey = Pubkey::from_slice(&sig_storage_bytes);
-
-        let instruction_data = borsh::to_vec(&QuipInstruction::StoreSignature {
-            chunk_data: invalid_signature,
-            is_first_chunk: true,
-        }).unwrap();
-
-        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
-        let tx = build_and_sign_transaction(
-            ArchMessage::new(
-                &[Instruction {
-                    program_id: program_pubkey,
-                    accounts: vec![
-                        AccountMeta { pubkey: signature_storage_pubkey, is_signer: false, is_writable: true },
-                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
-                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                    ],
-                    data: instruction_data,
-                }],
-                Some(owner_pubkey),
-                recent_blockhash,
-            ),
-            vec![owner_keypair.clone()],
-            config.network,
-        ).unwrap();
-
-        let txid = client.send_transaction(tx).unwrap();
-        client.wait_for_processed_transaction(&txid).unwrap();
-        println!("Invalid signature stored");
 
         // Attempt transfer with invalid signature
         println!("\n--- Attempting Transfer (should fail) ---");
@@ -1764,24 +1610,29 @@ mod quip_tests {
             vault_id,
             pq_next: pq_next.clone(),
             amount: 1000,
-            tx_hex: vec![],
+            signature: WinternitzSignature { signature_data: invalid_signature },
         }).unwrap();
+
+        // Request higher compute budget for WOTS+ signature verification
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
         let tx = build_and_sign_transaction(
             ArchMessage::new(
-                &[Instruction {
-                    program_id: program_pubkey,
-                    accounts: vec![
-                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
-                        AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
-                        AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
-                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
-                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                        AccountMeta { pubkey: signature_storage_pubkey, is_signer: false, is_writable: false },
-                    ],
-                    data: instruction_data,
-                }],
+                &[
+                    compute_budget_ix,
+                    Instruction {
+                        program_id: program_pubkey,
+                        accounts: vec![
+                            AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                            AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                        ],
+                        data: instruction_data,
+                    },
+                ],
                 Some(owner_pubkey),
                 recent_blockhash,
             ),
@@ -1904,7 +1755,6 @@ mod quip_tests {
             pq_to: pq_key.clone(),
             initial_deposit: 5000,
             wallet_utxo,
-            tx_hex: vec![],
         }).unwrap();
 
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
@@ -1932,63 +1782,38 @@ mod quip_tests {
         client.wait_for_processed_transaction(&txid).unwrap();
         println!("Wallet created");
 
-        // Create and store signature for key change
-        println!("\n--- Storing Signature for Key Change ---");
+        // Create signature for key change
+        println!("\n--- Creating Signature for Key Change ---");
         let message = create_change_owner_message(&pq_key, &pq_next);
         let signature_data = sign_message(&private_key, &message);
         println!("Signature created: {} bytes", signature_data.len());
-
-        let (sig_storage_bytes, _) = derive_signature_storage_address(&program_pubkey, &owner_bytes);
-        let signature_storage_pubkey = Pubkey::from_slice(&sig_storage_bytes);
-
-        let instruction_data = borsh::to_vec(&QuipInstruction::StoreSignature {
-            chunk_data: signature_data,
-            is_first_chunk: true,
-        }).unwrap();
-
-        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
-        let tx = build_and_sign_transaction(
-            ArchMessage::new(
-                &[Instruction {
-                    program_id: program_pubkey,
-                    accounts: vec![
-                        AccountMeta { pubkey: signature_storage_pubkey, is_signer: false, is_writable: true },
-                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
-                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                    ],
-                    data: instruction_data,
-                }],
-                Some(owner_pubkey),
-                recent_blockhash,
-            ),
-            vec![owner_keypair.clone()],
-            config.network,
-        ).unwrap();
-
-        let txid = client.send_transaction(tx).unwrap();
-        client.wait_for_processed_transaction(&txid).unwrap();
-        println!("Signature stored");
 
         // Execute key change
         println!("\n--- Changing PQ Owner ---");
         let instruction_data = borsh::to_vec(&QuipInstruction::ChangePqOwner {
             vault_id,
             pq_next: pq_next.clone(),
+            signature: WinternitzSignature { signature_data },
         }).unwrap();
+
+        // Request higher compute budget for WOTS+ signature verification
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
         let tx = build_and_sign_transaction(
             ArchMessage::new(
-                &[Instruction {
-                    program_id: program_pubkey,
-                    accounts: vec![
-                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: false },
-                        AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
-                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
-                        AccountMeta { pubkey: signature_storage_pubkey, is_signer: false, is_writable: false },
-                    ],
-                    data: instruction_data,
-                }],
+                &[
+                    compute_budget_ix,
+                    Instruction {
+                        program_id: program_pubkey,
+                        accounts: vec![
+                            AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: false },
+                            AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                        ],
+                        data: instruction_data,
+                    },
+                ],
                 Some(owner_pubkey),
                 recent_blockhash,
             ),
@@ -2559,5 +2384,1264 @@ mod quip_tests {
         );
 
         println!("\n=== Test PASSED: Fake System Program Rejected ===\n");
+    }
+
+    // =============================================================================
+    // Transfer Negative Tests
+    // =============================================================================
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_transfer_with_winternitz_insufficient_balance() {
+        println!("\n=== Test: TransferWithWinternitz Insufficient Balance ===\n");
+
+        // Setup
+        let mut config = Config::localnet();
+        config.titan_url = "http://127.0.0.1:8080".to_string();
+        let client = ArchRpcClient::new(&config);
+        let helper = BitcoinHelper::new(&config);
+
+        // Generate keypairs
+        let (authority_keypair, _, _) = generate_new_keypair(config.network);
+        let (program_keypair, _, _) = generate_new_keypair(config.network);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
+        let (owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
+        let (_recipient_keypair, recipient_pubkey, _) = generate_new_keypair(config.network);
+
+        println!("Owner: {}", owner_pubkey);
+        println!("Recipient: {}", recipient_pubkey);
+
+        // Fund and deploy
+        client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&owner_keypair).unwrap();
+
+        let deployer = ProgramDeployer::new(&config);
+        let program_pubkey = deployer
+            .try_deploy_program(
+                "quip-arch".to_string(),
+                program_keypair,
+                authority_keypair,
+                &ELF_PATH.to_string(),
+            )
+            .unwrap();
+        println!("Program deployed at: {}", program_pubkey);
+
+        // Initialize factory
+        let (factory_bytes, _) = derive_factory_address(&program_pubkey);
+        let factory_pubkey = Pubkey::from_slice(&factory_bytes);
+
+        let (factory_txid, factory_vout) = helper.send_utxo(factory_pubkey).unwrap();
+        let factory_utxo = UtxoMeta::from(
+            hex::decode(&factory_txid).unwrap().try_into().unwrap(),
+            factory_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::InitializeFactory {
+            admin: admin_pubkey.serialize(),
+            creation_fee: 1000,
+            transfer_fee: 500,
+            execute_fee: 750,
+            factory_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(owner_pubkey),
+                recent_blockhash,
+            ),
+            vec![owner_keypair.clone()],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Factory initialized");
+
+        // Create wallet with small deposit
+        println!("\n--- Creating Wallet with Small Deposit ---");
+        let vault_id = [7u8; 32];
+        let (pq_key, private_key) = generate_wots_keypair(7);
+        let (pq_next, _) = generate_wots_keypair(8);
+        let initial_deposit: u64 = 100; // Very small deposit
+
+        let owner_bytes = owner_pubkey.serialize();
+        let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
+        let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
+
+        let (wallet_txid, wallet_vout) = helper.send_utxo(wallet_pubkey).unwrap();
+        let wallet_utxo = UtxoMeta::from(
+            hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
+            wallet_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::DepositToWinternitz {
+            vault_id,
+            to: owner_bytes,
+            pq_to: pq_key.clone(),
+            initial_deposit,
+            wallet_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: false, is_writable: false },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(owner_pubkey),
+                recent_blockhash,
+            ),
+            vec![owner_keypair.clone()],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Wallet created with small deposit: {}", initial_deposit);
+
+        // Attempt transfer larger than balance
+        println!("\n--- Attempting Transfer Larger Than Balance ---");
+        let transfer_amount: u64 = 100000; // Much larger than deposit
+        let recipient_bytes = recipient_pubkey.serialize();
+        let message = create_transfer_message(&pq_key, &pq_next, &recipient_bytes, transfer_amount);
+        let signature_data = sign_message(&private_key, &message);
+        println!("Transfer amount: {} (wallet has ~{})", transfer_amount, initial_deposit);
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::TransferWithWinternitz {
+            vault_id,
+            pq_next: pq_next.clone(),
+            amount: transfer_amount,
+            signature: WinternitzSignature { signature_data },
+        }).unwrap();
+
+        // Request higher compute budget for WOTS+ signature verification
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[
+                    compute_budget_ix,
+                    Instruction {
+                        program_id: program_pubkey,
+                        accounts: vec![
+                            AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                            AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                        ],
+                        data: instruction_data,
+                    },
+                ],
+                Some(owner_pubkey),
+                recent_blockhash,
+            ),
+            vec![owner_keypair],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        println!("Transaction sent: {}", txid);
+
+        let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Transaction status: {:?}", processed_tx.status);
+
+        assert!(
+            matches!(processed_tx.status, Status::Failed(_)),
+            "Transfer with insufficient balance should fail"
+        );
+
+        println!("\n=== Test PASSED: TransferWithWinternitz Insufficient Balance ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_transfer_with_winternitz_unauthorized() {
+        println!("\n=== Test: TransferWithWinternitz Unauthorized ===\n");
+
+        // Setup
+        let mut config = Config::localnet();
+        config.titan_url = "http://127.0.0.1:8080".to_string();
+        let client = ArchRpcClient::new(&config);
+        let helper = BitcoinHelper::new(&config);
+
+        // Generate keypairs
+        let (authority_keypair, _, _) = generate_new_keypair(config.network);
+        let (program_keypair, _, _) = generate_new_keypair(config.network);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
+        let (owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
+        let (attacker_keypair, attacker_pubkey, _) = generate_new_keypair(config.network);
+        let (_recipient_keypair, recipient_pubkey, _) = generate_new_keypair(config.network);
+
+        println!("Owner: {}", owner_pubkey);
+        println!("Attacker: {}", attacker_pubkey);
+
+        // Fund and deploy
+        client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&owner_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&attacker_keypair).unwrap();
+
+        let deployer = ProgramDeployer::new(&config);
+        let program_pubkey = deployer
+            .try_deploy_program(
+                "quip-arch".to_string(),
+                program_keypair,
+                authority_keypair,
+                &ELF_PATH.to_string(),
+            )
+            .unwrap();
+        println!("Program deployed at: {}", program_pubkey);
+
+        // Initialize factory
+        let (factory_bytes, _) = derive_factory_address(&program_pubkey);
+        let factory_pubkey = Pubkey::from_slice(&factory_bytes);
+
+        let (factory_txid, factory_vout) = helper.send_utxo(factory_pubkey).unwrap();
+        let factory_utxo = UtxoMeta::from(
+            hex::decode(&factory_txid).unwrap().try_into().unwrap(),
+            factory_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::InitializeFactory {
+            admin: admin_pubkey.serialize(),
+            creation_fee: 1000,
+            transfer_fee: 500,
+            execute_fee: 750,
+            factory_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(owner_pubkey),
+                recent_blockhash,
+            ),
+            vec![owner_keypair.clone()],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Factory initialized");
+
+        // Create wallet owned by owner
+        println!("\n--- Creating Wallet ---");
+        let vault_id = [8u8; 32];
+        let (pq_key, private_key) = generate_wots_keypair(8);
+        let (pq_next, _) = generate_wots_keypair(9);
+
+        let owner_bytes = owner_pubkey.serialize();
+        let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
+        let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
+
+        let (wallet_txid, wallet_vout) = helper.send_utxo(wallet_pubkey).unwrap();
+        let wallet_utxo = UtxoMeta::from(
+            hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
+            wallet_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::DepositToWinternitz {
+            vault_id,
+            to: owner_bytes,
+            pq_to: pq_key.clone(),
+            initial_deposit: 10000,
+            wallet_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: false, is_writable: false },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(owner_pubkey),
+                recent_blockhash,
+            ),
+            vec![owner_keypair],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Wallet created");
+
+        // Attacker attempts to transfer (with valid signature but wrong signer)
+        println!("\n--- Attacker Attempting Transfer ---");
+        let transfer_amount: u64 = 1000;
+        let recipient_bytes = recipient_pubkey.serialize();
+        let message = create_transfer_message(&pq_key, &pq_next, &recipient_bytes, transfer_amount);
+        let signature_data = sign_message(&private_key, &message);
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::TransferWithWinternitz {
+            vault_id,
+            pq_next: pq_next.clone(),
+            amount: transfer_amount,
+            signature: WinternitzSignature { signature_data },
+        }).unwrap();
+
+        // Request higher compute budget for WOTS+ signature verification
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[
+                    compute_budget_ix,
+                    Instruction {
+                        program_id: program_pubkey,
+                        accounts: vec![
+                            AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: attacker_pubkey, is_signer: true, is_writable: true }, // Attacker as payer
+                            AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                        ],
+                        data: instruction_data,
+                    },
+                ],
+                Some(attacker_pubkey),
+                recent_blockhash,
+            ),
+            vec![attacker_keypair],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        println!("Transaction sent: {}", txid);
+
+        let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Transaction status: {:?}", processed_tx.status);
+
+        assert!(
+            matches!(processed_tx.status, Status::Failed(_)),
+            "Unauthorized transfer should fail"
+        );
+
+        println!("\n=== Test PASSED: TransferWithWinternitz Unauthorized ===\n");
+    }
+
+    // =============================================================================
+    // ChangePqOwner Negative Tests
+    // =============================================================================
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_change_pq_owner_invalid_signature() {
+        println!("\n=== Test: ChangePqOwner Invalid Signature ===\n");
+
+        // Setup
+        let mut config = Config::localnet();
+        config.titan_url = "http://127.0.0.1:8080".to_string();
+        let client = ArchRpcClient::new(&config);
+        let helper = BitcoinHelper::new(&config);
+
+        // Generate keypairs
+        let (authority_keypair, _, _) = generate_new_keypair(config.network);
+        let (program_keypair, _, _) = generate_new_keypair(config.network);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
+        let (owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
+
+        println!("Owner: {}", owner_pubkey);
+
+        // Fund and deploy
+        client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&owner_keypair).unwrap();
+
+        let deployer = ProgramDeployer::new(&config);
+        let program_pubkey = deployer
+            .try_deploy_program(
+                "quip-arch".to_string(),
+                program_keypair,
+                authority_keypair,
+                &ELF_PATH.to_string(),
+            )
+            .unwrap();
+        println!("Program deployed at: {}", program_pubkey);
+
+        // Initialize factory
+        let (factory_bytes, _) = derive_factory_address(&program_pubkey);
+        let factory_pubkey = Pubkey::from_slice(&factory_bytes);
+
+        let (factory_txid, factory_vout) = helper.send_utxo(factory_pubkey).unwrap();
+        let factory_utxo = UtxoMeta::from(
+            hex::decode(&factory_txid).unwrap().try_into().unwrap(),
+            factory_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::InitializeFactory {
+            admin: admin_pubkey.serialize(),
+            creation_fee: 1000,
+            transfer_fee: 500,
+            execute_fee: 750,
+            factory_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(owner_pubkey),
+                recent_blockhash,
+            ),
+            vec![owner_keypair.clone()],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Factory initialized");
+
+        // Create wallet
+        println!("\n--- Creating Wallet ---");
+        let vault_id = [9u8; 32];
+        let (pq_key, _) = generate_wots_keypair(9);
+        let (pq_next, _) = generate_wots_keypair(10);
+
+        let owner_bytes = owner_pubkey.serialize();
+        let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
+        let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
+
+        let (wallet_txid, wallet_vout) = helper.send_utxo(wallet_pubkey).unwrap();
+        let wallet_utxo = UtxoMeta::from(
+            hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
+            wallet_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::DepositToWinternitz {
+            vault_id,
+            to: owner_bytes,
+            pq_to: pq_key.clone(),
+            initial_deposit: 5000,
+            wallet_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: false, is_writable: false },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(owner_pubkey),
+                recent_blockhash,
+            ),
+            vec![owner_keypair.clone()],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Wallet created");
+
+        // Attempt key change with invalid signature
+        println!("\n--- Attempting Key Change with Invalid Signature ---");
+        let invalid_signature = vec![0xFFu8; 2144]; // Invalid signature data
+        println!("Invalid signature size: {} bytes", invalid_signature.len());
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::ChangePqOwner {
+            vault_id,
+            pq_next: pq_next.clone(),
+            signature: WinternitzSignature { signature_data: invalid_signature },
+        }).unwrap();
+
+        // Request higher compute budget for WOTS+ signature verification
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[
+                    compute_budget_ix,
+                    Instruction {
+                        program_id: program_pubkey,
+                        accounts: vec![
+                            AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: false },
+                            AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                        ],
+                        data: instruction_data,
+                    },
+                ],
+                Some(owner_pubkey),
+                recent_blockhash,
+            ),
+            vec![owner_keypair],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        println!("Transaction sent: {}", txid);
+
+        let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Transaction status: {:?}", processed_tx.status);
+
+        assert!(
+            matches!(processed_tx.status, Status::Failed(_)),
+            "Key change with invalid signature should fail"
+        );
+
+        println!("\n=== Test PASSED: ChangePqOwner Invalid Signature ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_change_pq_owner_unauthorized() {
+        println!("\n=== Test: ChangePqOwner Unauthorized ===\n");
+
+        // Setup
+        let mut config = Config::localnet();
+        config.titan_url = "http://127.0.0.1:8080".to_string();
+        let client = ArchRpcClient::new(&config);
+        let helper = BitcoinHelper::new(&config);
+
+        // Generate keypairs
+        let (authority_keypair, _, _) = generate_new_keypair(config.network);
+        let (program_keypair, _, _) = generate_new_keypair(config.network);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
+        let (owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
+        let (attacker_keypair, attacker_pubkey, _) = generate_new_keypair(config.network);
+
+        println!("Owner: {}", owner_pubkey);
+        println!("Attacker: {}", attacker_pubkey);
+
+        // Fund and deploy
+        client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&owner_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&attacker_keypair).unwrap();
+
+        let deployer = ProgramDeployer::new(&config);
+        let program_pubkey = deployer
+            .try_deploy_program(
+                "quip-arch".to_string(),
+                program_keypair,
+                authority_keypair,
+                &ELF_PATH.to_string(),
+            )
+            .unwrap();
+        println!("Program deployed at: {}", program_pubkey);
+
+        // Initialize factory
+        let (factory_bytes, _) = derive_factory_address(&program_pubkey);
+        let factory_pubkey = Pubkey::from_slice(&factory_bytes);
+
+        let (factory_txid, factory_vout) = helper.send_utxo(factory_pubkey).unwrap();
+        let factory_utxo = UtxoMeta::from(
+            hex::decode(&factory_txid).unwrap().try_into().unwrap(),
+            factory_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::InitializeFactory {
+            admin: admin_pubkey.serialize(),
+            creation_fee: 1000,
+            transfer_fee: 500,
+            execute_fee: 750,
+            factory_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(owner_pubkey),
+                recent_blockhash,
+            ),
+            vec![owner_keypair.clone()],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Factory initialized");
+
+        // Create wallet owned by owner
+        println!("\n--- Creating Wallet ---");
+        let vault_id = [10u8; 32];
+        let (pq_key, private_key) = generate_wots_keypair(10);
+        let (pq_next, _) = generate_wots_keypair(11);
+
+        let owner_bytes = owner_pubkey.serialize();
+        let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
+        let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
+
+        let (wallet_txid, wallet_vout) = helper.send_utxo(wallet_pubkey).unwrap();
+        let wallet_utxo = UtxoMeta::from(
+            hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
+            wallet_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::DepositToWinternitz {
+            vault_id,
+            to: owner_bytes,
+            pq_to: pq_key.clone(),
+            initial_deposit: 5000,
+            wallet_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: false, is_writable: false },
+                        AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(owner_pubkey),
+                recent_blockhash,
+            ),
+            vec![owner_keypair],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Wallet created");
+
+        // Attacker attempts key change (even with valid signature)
+        println!("\n--- Attacker Attempting Key Change ---");
+        let message = create_change_owner_message(&pq_key, &pq_next);
+        let signature_data = sign_message(&private_key, &message);
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::ChangePqOwner {
+            vault_id,
+            pq_next: pq_next.clone(),
+            signature: WinternitzSignature { signature_data },
+        }).unwrap();
+
+        // Request higher compute budget for WOTS+ signature verification
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[
+                    compute_budget_ix,
+                    Instruction {
+                        program_id: program_pubkey,
+                        accounts: vec![
+                            AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: false },
+                            AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: attacker_pubkey, is_signer: true, is_writable: true }, // Attacker as payer
+                        ],
+                        data: instruction_data,
+                    },
+                ],
+                Some(attacker_pubkey),
+                recent_blockhash,
+            ),
+            vec![attacker_keypair],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        println!("Transaction sent: {}", txid);
+
+        let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Transaction status: {:?}", processed_tx.status);
+
+        assert!(
+            matches!(processed_tx.status, Status::Failed(_)),
+            "Unauthorized key change should fail"
+        );
+
+        println!("\n=== Test PASSED: ChangePqOwner Unauthorized ===\n");
+    }
+
+    // =============================================================================
+    // WithdrawFees Tests
+    // =============================================================================
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_withdraw_fees_success() {
+        println!("\n=== Test: WithdrawFees Success ===\n");
+
+        // Setup
+        let mut config = Config::localnet();
+        config.titan_url = "http://127.0.0.1:8080".to_string();
+        let client = ArchRpcClient::new(&config);
+        let helper = BitcoinHelper::new(&config);
+
+        // Generate keypairs
+        let (authority_keypair, _, _) = generate_new_keypair(config.network);
+        let (program_keypair, _, _) = generate_new_keypair(config.network);
+        let (admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
+        let (payer_keypair, payer_pubkey, _) = generate_new_keypair(config.network);
+        let (recipient_keypair, recipient_pubkey, _) = generate_new_keypair(config.network);
+
+        println!("Admin: {}", admin_pubkey);
+        println!("Recipient: {}", recipient_pubkey);
+
+        // Fund and deploy
+        client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&admin_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&payer_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&recipient_keypair).unwrap();
+
+        let deployer = ProgramDeployer::new(&config);
+        let program_pubkey = deployer
+            .try_deploy_program(
+                "quip-arch".to_string(),
+                program_keypair,
+                authority_keypair,
+                &ELF_PATH.to_string(),
+            )
+            .unwrap();
+        println!("Program deployed at: {}", program_pubkey);
+
+        // Initialize factory
+        let (factory_bytes, _) = derive_factory_address(&program_pubkey);
+        let factory_pubkey = Pubkey::from_slice(&factory_bytes);
+
+        let (factory_txid, factory_vout) = helper.send_utxo(factory_pubkey).unwrap();
+        let factory_utxo = UtxoMeta::from(
+            hex::decode(&factory_txid).unwrap().try_into().unwrap(),
+            factory_vout,
+        );
+
+        let creation_fee: u64 = 1000;
+        let instruction_data = borsh::to_vec(&QuipInstruction::InitializeFactory {
+            admin: admin_pubkey.serialize(),
+            creation_fee,
+            transfer_fee: 500,
+            execute_fee: 750,
+            factory_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(payer_pubkey),
+                recent_blockhash,
+            ),
+            vec![payer_keypair.clone()],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Factory initialized with creation_fee: {}", creation_fee);
+
+        // Create a wallet to accumulate fees
+        println!("\n--- Creating Wallet (to accumulate fees) ---");
+        let vault_id = [11u8; 32];
+        let (pq_key, _) = generate_wots_keypair(11);
+
+        let owner_bytes = payer_pubkey.serialize();
+        let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
+        let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
+
+        let (wallet_txid, wallet_vout) = helper.send_utxo(wallet_pubkey).unwrap();
+        let wallet_utxo = UtxoMeta::from(
+            hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
+            wallet_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::DepositToWinternitz {
+            vault_id,
+            to: owner_bytes,
+            pq_to: pq_key,
+            initial_deposit: 5000,
+            wallet_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: payer_pubkey, is_signer: false, is_writable: false },
+                        AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(payer_pubkey),
+                recent_blockhash,
+            ),
+            vec![payer_keypair],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Wallet created, fees accumulated");
+
+        // Check factory state and capture balances before withdrawal
+        let factory_account = client.read_account_info(factory_pubkey).unwrap();
+        let factory = QuipFactory::try_from_slice(&factory_account.data).unwrap();
+        println!("Factory accumulated_fees: {}", factory.accumulated_fees);
+        let factory_balance_before = factory_account.lamports;
+        println!("Factory balance: {}", factory_balance_before);
+        let recipient_balance_before = client.read_account_info(recipient_pubkey).unwrap().lamports;
+        println!("Recipient balance before: {}", recipient_balance_before);
+
+        // Withdraw fees
+        println!("\n--- Withdrawing Fees ---");
+        let withdraw_amount: u64 = 500; // Withdraw partial fees
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::WithdrawFees {
+            amount: withdraw_amount,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: admin_pubkey, is_signer: true, is_writable: false },
+                        AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(admin_pubkey),
+                recent_blockhash,
+            ),
+            vec![admin_keypair],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        println!("Transaction sent: {}", txid);
+
+        let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Transaction status: {:?}", processed_tx.status);
+        assert!(processed_tx.status == Status::Processed);
+
+        // Verify factory state after withdrawal
+        println!("\n--- Verifying Factory State ---");
+        let factory_account = client.read_account_info(factory_pubkey).unwrap();
+        let factory = QuipFactory::try_from_slice(&factory_account.data).unwrap();
+        println!("Factory accumulated_fees after: {}", factory.accumulated_fees);
+        assert_eq!(factory.accumulated_fees, creation_fee - withdraw_amount);
+
+        // Verify recipient received funds
+        let recipient_balance_after = client.read_account_info(recipient_pubkey).unwrap().lamports;
+        let recipient_balance_increase = recipient_balance_after - recipient_balance_before;
+        println!("Recipient balance increased by: {}", recipient_balance_increase);
+        assert_eq!(
+            recipient_balance_increase, withdraw_amount,
+            "Recipient balance increase {} should equal withdraw_amount {}",
+            recipient_balance_increase, withdraw_amount
+        );
+
+        println!("\n=== Test PASSED: WithdrawFees Success ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_withdraw_fees_unauthorized() {
+        println!("\n=== Test: WithdrawFees Unauthorized ===\n");
+
+        // Setup
+        let mut config = Config::localnet();
+        config.titan_url = "http://127.0.0.1:8080".to_string();
+        let client = ArchRpcClient::new(&config);
+        let helper = BitcoinHelper::new(&config);
+
+        // Generate keypairs
+        let (authority_keypair, _, _) = generate_new_keypair(config.network);
+        let (program_keypair, _, _) = generate_new_keypair(config.network);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
+        let (payer_keypair, payer_pubkey, _) = generate_new_keypair(config.network);
+        let (attacker_keypair, attacker_pubkey, _) = generate_new_keypair(config.network);
+
+        println!("Admin: {}", admin_pubkey);
+        println!("Attacker: {}", attacker_pubkey);
+
+        // Fund and deploy
+        client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&payer_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&attacker_keypair).unwrap();
+
+        let deployer = ProgramDeployer::new(&config);
+        let program_pubkey = deployer
+            .try_deploy_program(
+                "quip-arch".to_string(),
+                program_keypair,
+                authority_keypair,
+                &ELF_PATH.to_string(),
+            )
+            .unwrap();
+        println!("Program deployed at: {}", program_pubkey);
+
+        // Initialize factory
+        let (factory_bytes, _) = derive_factory_address(&program_pubkey);
+        let factory_pubkey = Pubkey::from_slice(&factory_bytes);
+
+        let (factory_txid, factory_vout) = helper.send_utxo(factory_pubkey).unwrap();
+        let factory_utxo = UtxoMeta::from(
+            hex::decode(&factory_txid).unwrap().try_into().unwrap(),
+            factory_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::InitializeFactory {
+            admin: admin_pubkey.serialize(),
+            creation_fee: 1000,
+            transfer_fee: 500,
+            execute_fee: 750,
+            factory_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(payer_pubkey),
+                recent_blockhash,
+            ),
+            vec![payer_keypair.clone()],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Factory initialized");
+
+        // Create a wallet to accumulate fees
+        let vault_id = [12u8; 32];
+        let (pq_key, _) = generate_wots_keypair(12);
+        let owner_bytes = payer_pubkey.serialize();
+        let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
+        let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
+
+        let (wallet_txid, wallet_vout) = helper.send_utxo(wallet_pubkey).unwrap();
+        let wallet_utxo = UtxoMeta::from(
+            hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
+            wallet_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::DepositToWinternitz {
+            vault_id,
+            to: owner_bytes,
+            pq_to: pq_key,
+            initial_deposit: 5000,
+            wallet_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: payer_pubkey, is_signer: false, is_writable: false },
+                        AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(payer_pubkey),
+                recent_blockhash,
+            ),
+            vec![payer_keypair],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Wallet created, fees accumulated");
+
+        // Attacker attempts to withdraw fees
+        println!("\n--- Attacker Attempting Fee Withdrawal ---");
+        let instruction_data = borsh::to_vec(&QuipInstruction::WithdrawFees {
+            amount: 500,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: attacker_pubkey, is_signer: true, is_writable: false }, // Attacker as admin
+                        AccountMeta { pubkey: attacker_pubkey, is_signer: false, is_writable: true }, // Attacker as recipient
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(attacker_pubkey),
+                recent_blockhash,
+            ),
+            vec![attacker_keypair],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        println!("Transaction sent: {}", txid);
+
+        let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Transaction status: {:?}", processed_tx.status);
+
+        assert!(
+            matches!(processed_tx.status, Status::Failed(_)),
+            "Unauthorized fee withdrawal should fail"
+        );
+
+        println!("\n=== Test PASSED: WithdrawFees Unauthorized ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_withdraw_fees_insufficient() {
+        println!("\n=== Test: WithdrawFees Insufficient ===\n");
+
+        // Setup
+        let mut config = Config::localnet();
+        config.titan_url = "http://127.0.0.1:8080".to_string();
+        let client = ArchRpcClient::new(&config);
+        let helper = BitcoinHelper::new(&config);
+
+        // Generate keypairs
+        let (authority_keypair, _, _) = generate_new_keypair(config.network);
+        let (program_keypair, _, _) = generate_new_keypair(config.network);
+        let (admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
+        let (payer_keypair, payer_pubkey, _) = generate_new_keypair(config.network);
+        let (_recipient_keypair, recipient_pubkey, _) = generate_new_keypair(config.network);
+
+        println!("Admin: {}", admin_pubkey);
+
+        // Fund and deploy
+        client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&admin_keypair).unwrap();
+        client.create_and_fund_account_with_faucet(&payer_keypair).unwrap();
+
+        let deployer = ProgramDeployer::new(&config);
+        let program_pubkey = deployer
+            .try_deploy_program(
+                "quip-arch".to_string(),
+                program_keypair,
+                authority_keypair,
+                &ELF_PATH.to_string(),
+            )
+            .unwrap();
+        println!("Program deployed at: {}", program_pubkey);
+
+        // Initialize factory with small creation fee
+        let (factory_bytes, _) = derive_factory_address(&program_pubkey);
+        let factory_pubkey = Pubkey::from_slice(&factory_bytes);
+
+        let (factory_txid, factory_vout) = helper.send_utxo(factory_pubkey).unwrap();
+        let factory_utxo = UtxoMeta::from(
+            hex::decode(&factory_txid).unwrap().try_into().unwrap(),
+            factory_vout,
+        );
+
+        let creation_fee: u64 = 100; // Small fee
+        let instruction_data = borsh::to_vec(&QuipInstruction::InitializeFactory {
+            admin: admin_pubkey.serialize(),
+            creation_fee,
+            transfer_fee: 50,
+            execute_fee: 75,
+            factory_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(payer_pubkey),
+                recent_blockhash,
+            ),
+            vec![payer_keypair.clone()],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Factory initialized with small creation_fee: {}", creation_fee);
+
+        // Create a wallet to accumulate some fees
+        let vault_id = [13u8; 32];
+        let (pq_key, _) = generate_wots_keypair(13);
+        let owner_bytes = payer_pubkey.serialize();
+        let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
+        let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
+
+        let (wallet_txid, wallet_vout) = helper.send_utxo(wallet_pubkey).unwrap();
+        let wallet_utxo = UtxoMeta::from(
+            hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
+            wallet_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::DepositToWinternitz {
+            vault_id,
+            to: owner_bytes,
+            pq_to: pq_key,
+            initial_deposit: 1000,
+            wallet_utxo,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: payer_pubkey, is_signer: false, is_writable: false },
+                        AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(payer_pubkey),
+                recent_blockhash,
+            ),
+            vec![payer_keypair],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Wallet created, accumulated_fees should be {}", creation_fee);
+
+        // Attempt to withdraw more than accumulated
+        println!("\n--- Attempting to Withdraw More Than Accumulated ---");
+        let withdraw_amount: u64 = 10000; // Much more than accumulated
+        println!("Attempting to withdraw: {} (accumulated: {})", withdraw_amount, creation_fee);
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::WithdrawFees {
+            amount: withdraw_amount,
+        }).unwrap();
+
+        let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: admin_pubkey, is_signer: true, is_writable: false },
+                        AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(admin_pubkey),
+                recent_blockhash,
+            ),
+            vec![admin_keypair],
+            config.network,
+        ).unwrap();
+
+        let txid = client.send_transaction(tx).unwrap();
+        println!("Transaction sent: {}", txid);
+
+        let processed_tx = client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Transaction status: {:?}", processed_tx.status);
+
+        assert!(
+            matches!(processed_tx.status, Status::Failed(_)),
+            "Withdrawing more than accumulated should fail"
+        );
+
+        println!("\n=== Test PASSED: WithdrawFees Insufficient ===\n");
     }
 }
