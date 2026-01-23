@@ -361,6 +361,51 @@ pub fn verify_system_program(account: &AccountInfo) -> Result<(), ProgramError> 
 }
 
 // =============================================================================
+// PDA Account Creation
+// =============================================================================
+
+/// Create a PDA account using Arch Network's anchoring mechanism.
+///
+/// This function creates a new PDA account by anchoring it to a Bitcoin UTXO.
+/// The account will be owned by the specified program after creation.
+///
+/// ## Parameters
+///
+/// - `payer`: Account paying for the creation (must be signer)
+/// - `pda_account`: The PDA account to create
+/// - `space`: Size of the account data in bytes
+/// - `owner_program`: The program that will own this account
+/// - `utxo`: The Bitcoin UTXO to anchor the account creation to
+/// - `signer_seeds`: Seeds for signing the creation (including bump)
+///
+/// ## Returns
+///
+/// Returns `Ok(())` on success, or a `ProgramError` if creation fails.
+pub fn create_pda_account<'a>(
+    payer: &AccountInfo<'a>,
+    pda_account: &AccountInfo<'a>,
+    space: usize,
+    owner_program: &Pubkey,
+    utxo: &arch_program::utxo::UtxoMeta,
+    signer_seeds: &[&[u8]],
+) -> Result<(), ProgramError> {
+    use arch_program::system_instruction::create_account_with_anchor;
+    use arch_program::rent::minimum_rent;
+
+    let ix = create_account_with_anchor(
+        payer.key,
+        pda_account.key,
+        minimum_rent(space),
+        space as u64,
+        owner_program,
+        utxo.txid().try_into().map_err(|_| ProgramError::InvalidInstructionData)?,
+        utxo.vout(),
+    );
+
+    invoke_signed(&ix, &[pda_account.clone(), payer.clone()], &[signer_seeds])
+}
+
+// =============================================================================
 // Balance Checks
 // =============================================================================
 

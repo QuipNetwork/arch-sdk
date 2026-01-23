@@ -52,6 +52,7 @@ pub fn process_instruction<'a>(
             creation_fee,
             transfer_fee,
             execute_fee,
+            factory_utxo,
         } => {
             msg!("Instruction: InitializeFactory");
             process_initialize_factory(
@@ -61,6 +62,7 @@ pub fn process_instruction<'a>(
                 creation_fee,
                 transfer_fee,
                 execute_fee,
+                factory_utxo,
             )
         }
 
@@ -69,6 +71,7 @@ pub fn process_instruction<'a>(
             to,
             pq_to,
             initial_deposit,
+            wallet_utxo,
             tx_hex,
         } => {
             msg!("Instruction: DepositToWinternitz");
@@ -79,6 +82,7 @@ pub fn process_instruction<'a>(
                 to,
                 pq_to,
                 initial_deposit,
+                wallet_utxo,
                 tx_hex,
             )
         }
@@ -156,25 +160,42 @@ fn process_initialize_factory<'a>(
     creation_fee: u64,
     transfer_fee: u64,
     execute_fee: u64,
+    factory_utxo: arch_program::utxo::UtxoMeta,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
     let factory_info = next_account_info(account_info_iter)?;
-    let _payer_info = next_account_info(account_info_iter)?;
+    let payer_info = next_account_info(account_info_iter)?;
     let system_program_info = next_account_info(account_info_iter)?;
 
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
 
-    // Verify account ownership and permissions
-    if factory_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
+    // Verify writable
     if !factory_info.is_writable {
         return Err(QuipError::AccountNotWritable.into());
     }
 
     // Verify factory account derivation and get bump
     let factory_bump = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
+
+    // Check if factory account needs to be created
+    if factory_info.data_len() == 0 {
+        // Create PDA account
+        let factory_seeds: &[&[u8]] = &[b"factory", &[factory_bump]];
+        crate::utils::create_pda_account(
+            payer_info,
+            factory_info,
+            QuipFactory::SPACE,
+            program_id,
+            &factory_utxo,
+            factory_seeds,
+        )?;
+    }
+
+    // Verify ownership
+    if factory_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
 
     // Check if factory is already initialized
     let factory_data = factory_info.try_borrow_data()?;
@@ -216,6 +237,7 @@ fn process_deposit_to_winternitz<'a>(
     to: [u8; 32],
     pq_to: WinternitzPublicKey,
     initial_deposit: u64,
+    wallet_utxo: arch_program::utxo::UtxoMeta,
     tx_hex: Vec<u8>,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
@@ -228,13 +250,7 @@ fn process_deposit_to_winternitz<'a>(
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
 
-    // Verify account ownership and permissions
-    if factory_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-    if wallet_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
+    // Verify writable permissions
     if !factory_info.is_writable || !wallet_info.is_writable {
         return Err(QuipError::AccountNotWritable.into());
     }
@@ -244,9 +260,30 @@ fn process_deposit_to_winternitz<'a>(
         return Err(QuipError::UnauthorizedSigner.into());
     }
 
-    // Verify account derivations and get wallet bump
+    // Verify account derivations and get bumps
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
     let wallet_bump = crate::utils::verify_wallet_address(program_id, &to, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
+
+    // Create wallet PDA account if it doesn't exist
+    if wallet_info.data_len() == 0 {
+        let wallet_seeds: &[&[u8]] = &[b"wallet", to.as_ref(), vault_id.as_ref(), &[wallet_bump]];
+        crate::utils::create_pda_account(
+            payer_info,
+            wallet_info,
+            QuipWallet::SPACE,
+            program_id,
+            &wallet_utxo,
+            wallet_seeds,
+        )?;
+    }
+
+    // Verify ownership (factory must already exist, wallet was just created)
+    if factory_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if wallet_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
 
     // Check if wallet already exists
     let wallet_data = wallet_info.try_borrow_data()?;
