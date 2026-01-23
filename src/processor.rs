@@ -109,11 +109,11 @@ pub fn process_instruction<'a>(
         }
 
         QuipInstruction::StoreSignature {
-            chunk_data,
-            is_first_chunk,
+            signature_data,
+            sig_utxo,
         } => {
             msg!("Instruction: StoreSignature");
-            process_store_signature(program_id, accounts, chunk_data, is_first_chunk)
+            process_store_signature(program_id, accounts, signature_data, sig_utxo)
         }
 
         QuipInstruction::StoreOpdata {
@@ -786,8 +786,8 @@ fn process_change_pq_owner<'a>(
 fn process_store_signature<'a>(
     program_id: &Pubkey,
     accounts: &'a [AccountInfo<'a>],
-    chunk_data: Vec<u8>,
-    is_first_chunk: bool,
+    signature_data: Vec<u8>,
+    sig_utxo: arch_program::utxo::UtxoMeta,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
     let signature_storage_info = next_account_info(account_info_iter)?;
@@ -797,10 +797,7 @@ fn process_store_signature<'a>(
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
 
-    // Verify account ownership and permissions
-    if signature_storage_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
+    // Verify writable
     if !signature_storage_info.is_writable {
         return Err(QuipError::AccountNotWritable.into());
     }
@@ -810,43 +807,50 @@ fn process_store_signature<'a>(
         return Err(QuipError::UnauthorizedSigner.into());
     }
 
-    // Verify signature storage derivation
+    // Verify signature storage derivation and get bump
     let payer_bytes = pubkey_to_bytes(payer_info.key);
-    let _ = crate::utils::verify_signature_storage_address(program_id, &payer_bytes, &pubkey_to_bytes(signature_storage_info.key))?;
+    let sig_storage_bump = crate::utils::verify_signature_storage_address(
+        program_id,
+        &payer_bytes,
+        &pubkey_to_bytes(signature_storage_info.key),
+    )?;
 
-    let mut storage = if is_first_chunk {
-        // Initialize new storage
-        SignatureStorage {
-            is_initialized: true,
-            signature_data: Vec::new(),
-        }
-    } else {
-        // Load existing storage
-        let data = signature_storage_info.try_borrow_data()?;
-        let storage = SignatureStorage::try_from_slice(&data)
-            .map_err(|_| ProgramError::InvalidAccountData)?;
-        drop(data);
-        if !storage.is_initialized {
-            return Err(QuipError::SignatureStorageNotInitialized.into());
-        }
-        storage
-    };
+    // Create signature storage PDA account if it doesn't exist
+    if signature_storage_info.data_len() == 0 {
+        let sig_storage_seeds: &[&[u8]] = &[b"signature", payer_bytes.as_ref(), &[sig_storage_bump]];
+        crate::utils::create_pda_account(
+            payer_info,
+            signature_storage_info,
+            SignatureStorage::SPACE,
+            program_id,
+            &sig_utxo,
+            sig_storage_seeds,
+        )?;
+    }
 
-    // Append chunk data
-    storage.signature_data.extend_from_slice(&chunk_data);
+    // Verify ownership (after potential creation)
+    if signature_storage_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
 
-    // Validate size
-    if storage.signature_data.len() > SignatureStorage::MAX_SIGNATURE_SIZE {
+    // Validate signature size
+    if signature_data.len() > SignatureStorage::MAX_SIGNATURE_SIZE {
         return Err(QuipError::SignatureDataTooLarge.into());
     }
 
-    // Serialize updated storage
+    // Create storage state
+    let storage = SignatureStorage {
+        is_initialized: true,
+        signature_data,
+    };
+
+    // Serialize storage
     let mut data = signature_storage_info.try_borrow_mut_data()?;
     storage.serialize(&mut &mut data[..])
         .map_err(|_| ProgramError::InvalidAccountData)?;
 
     msg!(
-        "Stored signature chunk, total size: {}",
+        "Stored signature, size: {}",
         storage.signature_data.len()
     );
     Ok(())

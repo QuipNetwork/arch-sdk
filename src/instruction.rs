@@ -98,15 +98,16 @@ pub enum QuipInstruction {
         pq_next: WinternitzPublicKey,
     },
 
-    /// Store signature data (supports chunking)
+    /// Store signature data
     ///
     /// Accounts:
-    /// 0. `[writable]` Signature storage
+    /// 0. `[writable]` Signature storage (to be created if new)
     /// 1. `[signer, writable]` Payer
     /// 2. `[]` System program
     StoreSignature {
-        chunk_data: Vec<u8>,
-        is_first_chunk: bool,
+        signature_data: Vec<u8>,
+        /// UTXO for anchoring signature storage account creation
+        sig_utxo: UtxoMeta,
     },
 
     /// Store operation data (supports chunking)
