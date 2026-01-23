@@ -444,19 +444,11 @@ fn process_transfer_with_winternitz<'a>(
         return Err(QuipError::InvalidWotsSignature.into());
     }
 
-    // Build wallet PDA seeds for signing transfers
-    let wallet_seeds: &[&[u8]] = &[
-        b"wallet",
-        wallet.owner.as_ref(),
-        vault_id.as_ref(),
-        &[wallet.bump],
-    ];
-
     // Transfer fee from wallet to factory
-    crate::utils::transfer_value(wallet_info, factory_info, factory.transfer_fee, wallet_seeds)?;
+    crate::utils::transfer_value(wallet_info, factory_info, factory.transfer_fee)?;
 
     // Transfer the amount from wallet to recipient
-    crate::utils::transfer_value(wallet_info, recipient_info, amount, wallet_seeds)?;
+    crate::utils::transfer_value(wallet_info, recipient_info, amount)?;
 
     // Update accumulated fees counter
     factory.accumulated_fees = factory
@@ -600,7 +592,7 @@ fn process_execute_with_winternitz<'a>(
     ];
 
     // Transfer execute fee from wallet to factory
-    crate::utils::transfer_value(wallet_info, factory_info, factory.execute_fee, wallet_seeds)?;
+    crate::utils::transfer_value(wallet_info, factory_info, factory.execute_fee)?;
 
     // Update accumulated fees counter
     factory.accumulated_fees = factory
@@ -798,6 +790,10 @@ fn process_withdraw_fees<'a>(
     let factory_info = next_account_info(account_info_iter)?;
     let admin_info = next_account_info(account_info_iter)?;
     let recipient_info = next_account_info(account_info_iter)?;
+    let system_program_info = next_account_info(account_info_iter)?;
+
+    // Verify system program
+    crate::utils::verify_system_program(system_program_info)?;
 
     // Verify account ownership and permissions
     if factory_info.owner != program_id {
@@ -843,14 +839,8 @@ fn process_withdraw_fees<'a>(
         .checked_sub(amount)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    // Build factory PDA seeds for signing
-    let factory_seeds: &[&[u8]] = &[
-        b"factory",
-        &[factory.bump],
-    ];
-
     // Transfer the fees from factory to recipient
-    crate::utils::transfer_value(factory_info, recipient_info, amount, factory_seeds)?;
+    crate::utils::transfer_value(factory_info, recipient_info, amount)?;
 
     // Serialize updated factory (after transfer to ensure state consistency)
     let mut data = factory_info.try_borrow_mut_data()?;
