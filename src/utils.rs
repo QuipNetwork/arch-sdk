@@ -233,36 +233,45 @@ pub fn create_change_owner_message(
 /// Transfer lamports (ARCH tokens) from a PDA to another account.
 ///
 /// This function transfers the native ARCH token (lamports) between accounts
-/// using the system program. Since the source account is typically a PDA
-/// (like a QuipWallet or QuipFactory), this uses `invoke_signed` with the PDA's seeds.
+/// by directly manipulating lamport balances. This approach is required because
+/// the system program's transfer instruction does not allow transfers FROM accounts
+/// that have data (like our wallet/factory PDAs).
+///
+/// The system program can only transfer from accounts it owns. Once an account
+/// stores custom data, its ownership transfers to the program, and the System
+/// Program cannot transfer SOL from accounts it doesn't own.
 ///
 /// ## Parameters
 ///
 /// - `from`: Source account (must be a PDA owned by this program)
 /// - `to`: Destination account
 /// - `amount`: Amount of lamports to transfer
-/// - `signer_seeds`: Seeds used to derive the PDA (for signing)
 ///
 /// ## Returns
 ///
 /// Returns `Ok(())` on successful transfer, or a `ProgramError` if the
-/// transfer fails (e.g., insufficient funds, invalid accounts).
+/// transfer fails (e.g., insufficient funds).
 pub fn transfer_value<'a>(
     from: &AccountInfo<'a>,
     to: &AccountInfo<'a>,
     amount: u64,
-    signer_seeds: &[&[u8]],
 ) -> Result<(), ProgramError> {
     // Skip zero-amount transfers
     if amount == 0 {
         return Ok(());
     }
 
-    // Create the system instruction for transferring lamports
-    let ix = system_instruction::transfer(from.key, to.key, amount);
+    // Verify sufficient balance
+    if from.lamports() < amount {
+        return Err(ProgramError::InsufficientFunds);
+    }
 
-    // Execute the transfer using invoke_signed since 'from' is a PDA
-    invoke_signed(&ix, &[from.clone(), to.clone()], &[signer_seeds])
+    // Direct lamport manipulation - required for PDAs with data
+    // (system_instruction::transfer fails with "invalid program argument")
+    **from.try_borrow_mut_lamports()? -= amount;
+    **to.try_borrow_mut_lamports()? += amount;
+
+    Ok(())
 }
 
 /// Transfer lamports (ARCH tokens) from a signer account to another account.
