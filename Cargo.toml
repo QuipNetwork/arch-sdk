@@ -27,3 +27,9 @@ hex = "0.4"
 [features]
 no-entrypoint = []
 debug = []
+test = []
+
+[dev-dependencies]
+arch_sdk = "0.5.15"
+serial_test = "3.1.1"
+tokio = { version = "1", features = ["full"] }
