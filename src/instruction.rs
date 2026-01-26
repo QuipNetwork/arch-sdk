@@ -131,4 +131,29 @@ pub enum QuipInstruction {
     TransferOwnership {
         new_admin: [u8; 32],
     },
+
+    /// Transfer BTC (satoshis) on the Bitcoin network using WOTS+ signature
+    ///
+    /// Builds a Bitcoin transaction that spends the wallet PDA's UTXO,
+    /// sends `amount` satoshis to `recipient_script_pubkey`, and returns
+    /// change to the wallet. The Arch validator network threshold-signs
+    /// the transaction. Charges `transfer_fee` in lamports.
+    ///
+    /// Accounts:
+    /// 0. `[writable]` Factory
+    /// 1. `[writable]` Wallet
+    /// 2. `[signer, writable]` Payer (must be wallet owner)
+    /// 3. `[]` System program
+    BtcTransferWithWinternitz {
+        vault_id: [u8; 32],
+        pq_next: WinternitzPublicKey,
+        /// Satoshis to send to recipient
+        amount: u64,
+        /// Recipient's Bitcoin script_pubkey (supports any address type)
+        recipient_script_pubkey: Vec<u8>,
+        /// Serialized Bitcoin transaction providing the fee input
+        fee_tx: Vec<u8>,
+        /// WOTS+ signature
+        signature: WinternitzSignature,
+    },
 }

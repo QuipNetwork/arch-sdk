@@ -73,6 +73,9 @@ pub enum QuipError {
 
     #[error("Account not writable")]
     AccountNotWritable,
+
+    #[error("Insufficient BTC balance in wallet UTXO")]
+    InsufficientBtcBalance,
 }
 
 impl From<QuipError> for ProgramError {

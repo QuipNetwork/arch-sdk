@@ -17,9 +17,18 @@
 
 use arch_program::{
     account::{AccountInfo, AccountMeta, next_account_info},
+    bitcoin::{
+        self, absolute::LockTime, transaction::Version,
+        Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
+    },
+    bitcoin::hashes::Hash,
+    input_to_sign::InputToSign,
     instruction::Instruction,
     msg,
-    program::{get_bitcoin_block_height, invoke_signed},
+    program::{
+        get_account_script_pubkey, get_bitcoin_block_height, get_bitcoin_tx_output_value,
+        invoke_signed, set_transaction_to_sign,
+    },
     program_error::ProgramError,
     pubkey::Pubkey,
 };
@@ -128,6 +137,27 @@ pub fn process_instruction<'a>(
         QuipInstruction::TransferOwnership { new_admin } => {
             msg!("Instruction: TransferOwnership");
             process_transfer_ownership(program_id, accounts, new_admin)
+        }
+
+        QuipInstruction::BtcTransferWithWinternitz {
+            vault_id,
+            pq_next,
+            amount,
+            recipient_script_pubkey,
+            fee_tx,
+            signature,
+        } => {
+            msg!("Instruction: BtcTransferWithWinternitz");
+            process_btc_transfer_with_winternitz(
+                program_id,
+                accounts,
+                vault_id,
+                pq_next,
+                amount,
+                recipient_script_pubkey,
+                fee_tx,
+                signature,
+            )
         }
     }
 }
@@ -905,6 +935,203 @@ fn process_transfer_ownership<'a>(
         "Ownership transferred from {} to {}",
         hex::encode(old_admin),
         hex::encode(new_admin)
+    );
+    Ok(())
+}
+
+fn process_btc_transfer_with_winternitz<'a>(
+    program_id: &Pubkey,
+    accounts: &'a [AccountInfo<'a>],
+    vault_id: [u8; 32],
+    pq_next: WinternitzPublicKey,
+    amount: u64,
+    recipient_script_pubkey: Vec<u8>,
+    fee_tx: Vec<u8>,
+    signature: WinternitzSignature,
+) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let factory_info = next_account_info(account_info_iter)?;
+    let wallet_info = next_account_info(account_info_iter)?;
+    let payer_info = next_account_info(account_info_iter)?;
+    let system_program_info = next_account_info(account_info_iter)?;
+
+    // Verify system program
+    crate::utils::verify_system_program(system_program_info)?;
+
+    // Verify account ownership and permissions
+    if factory_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if wallet_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+    if !factory_info.is_writable || !wallet_info.is_writable {
+        return Err(QuipError::AccountNotWritable.into());
+    }
+
+    // Verify payer is signer
+    if !payer_info.is_signer {
+        return Err(QuipError::UnauthorizedSigner.into());
+    }
+
+    let payer_bytes = pubkey_to_bytes(payer_info.key);
+
+    // Verify account derivations
+    let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
+    let _ = crate::utils::verify_wallet_address(program_id, &payer_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
+
+    // Load states
+    let factory_data = factory_info.try_borrow_data()?;
+    let mut factory = QuipFactory::try_from_slice(&factory_data)
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+    drop(factory_data);
+
+    if !factory.is_initialized {
+        return Err(QuipError::AccountNotInitialized.into());
+    }
+
+    let wallet_data = wallet_info.try_borrow_data()?;
+    let mut wallet = QuipWallet::try_from_slice(&wallet_data)
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+    drop(wallet_data);
+
+    if !wallet.is_initialized {
+        return Err(QuipError::AccountNotInitialized.into());
+    }
+
+    // Verify payer is wallet owner
+    if payer_bytes != wallet.owner {
+        return Err(QuipError::UnauthorizedSigner.into());
+    }
+
+    // Pre-check wallet lamport balance for transfer fee
+    crate::utils::check_sufficient_balance(wallet_info, factory.transfer_fee)?;
+
+    // Validate inputs
+    if amount == 0 {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if recipient_script_pubkey.is_empty() {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    // Verify WOTS+ signature
+    let message = crate::utils::create_btc_transfer_message(
+        &wallet.pq_owner,
+        &pq_next,
+        &recipient_script_pubkey,
+        amount,
+    );
+    let is_valid = crate::utils::verify_winternitz_signature(&wallet.pq_owner, &message, &signature)?;
+    if !is_valid {
+        return Err(QuipError::InvalidWotsSignature.into());
+    }
+
+    // Get wallet's current UTXO value
+    let wallet_utxo = wallet_info.utxo.clone();
+    let utxo_txid: [u8; 32] = wallet_utxo.txid().try_into()
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+    let utxo_vout = wallet_utxo.vout();
+
+    let utxo_value = get_bitcoin_tx_output_value(utxo_txid, utxo_vout)
+        .ok_or::<ProgramError>(QuipError::InsufficientBtcBalance.into())?;
+
+    // Verify sufficient BTC balance
+    if utxo_value < amount {
+        return Err(QuipError::InsufficientBtcBalance.into());
+    }
+
+    // Compute change (must be > 0, v1 does not support full UTXO drain)
+    let wallet_change = utxo_value
+        .checked_sub(amount)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    if wallet_change == 0 {
+        return Err(QuipError::InsufficientBtcBalance.into());
+    }
+
+    // Deserialize the fee transaction and extract its first input as the fee input
+    let fee_transaction: Transaction = bitcoin::consensus::deserialize(&fee_tx)
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
+    let fee_input = fee_transaction.input.first()
+        .ok_or(ProgramError::InvalidInstructionData)?
+        .clone();
+
+    // Get the wallet PDA's script_pubkey for the change output
+    let wallet_script_bytes = get_account_script_pubkey(wallet_info.key);
+    let wallet_script = ScriptBuf::from_bytes(wallet_script_bytes.to_vec());
+
+    // Build the Bitcoin transaction
+    let btc_tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![
+            // Input 0: wallet's current UTXO
+            TxIn {
+                previous_output: OutPoint {
+                    txid: bitcoin::Txid::from_byte_array(utxo_txid),
+                    vout: utxo_vout,
+                },
+                script_sig: ScriptBuf::default(),
+                sequence: Sequence::MAX,
+                witness: Witness::default(),
+            },
+            // Input 1: fee input (from client-provided fee_tx)
+            fee_input,
+        ],
+        output: vec![
+            // Output 0: wallet change (new UTXO for wallet)
+            TxOut {
+                value: Amount::from_sat(wallet_change),
+                script_pubkey: wallet_script,
+            },
+            // Output 1: recipient
+            TxOut {
+                value: Amount::from_sat(amount),
+                script_pubkey: ScriptBuf::from_bytes(recipient_script_pubkey.clone()),
+            },
+        ],
+    };
+
+    // Charge lamport transfer fee from wallet to factory
+    crate::utils::transfer_value(wallet_info, factory_info, factory.transfer_fee)?;
+
+    // Update accumulated fees
+    factory.accumulated_fees = factory
+        .accumulated_fees
+        .checked_add(factory.transfer_fee)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+
+    // Update wallet state
+    wallet.pq_owner = pq_next;
+    wallet.transaction_count = wallet
+        .transaction_count
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    wallet.last_activity = get_bitcoin_block_height() as i64;
+
+    // Serialize updated states
+    let mut factory_data = factory_info.try_borrow_mut_data()?;
+    factory.serialize(&mut &mut factory_data[..])
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+    drop(factory_data);
+
+    let mut wallet_data = wallet_info.try_borrow_mut_data()?;
+    wallet.serialize(&mut &mut wallet_data[..])
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+    drop(wallet_data);
+
+    // Set the transaction for Arch validator network to threshold-sign
+    // Only input 0 (wallet's UTXO) needs signing by the wallet PDA
+    let inputs_to_sign = vec![InputToSign {
+        index: 0,
+        signer: wallet_info.key.clone(),
+    }];
+    set_transaction_to_sign(accounts, &btc_tx, &inputs_to_sign)?;
+
+    msg!(
+        "BTC transfer of {} sats with vault_id: {}",
+        amount,
+        hex::encode(vault_id)
     );
     Ok(())
 }
