@@ -959,12 +959,11 @@ fn process_btc_transfer_with_winternitz<'a>(
     let account_info_iter = &mut accounts.iter();
     let factory_info = next_account_info(account_info_iter)?;
     let wallet_info = next_account_info(account_info_iter)?;
-    let payer_info = next_account_info(account_info_iter)?;
+    // The owner is also the Arch tx fee payer. Since fee payers are implicitly
+    // writable in Arch, the owner must be anchored to a UTXO and included in
+    // the BTC transaction. Signed via sign_input + invoke (system-owned).
+    let owner_info = next_account_info(account_info_iter)?;
     let system_program_info = next_account_info(account_info_iter)?;
-    // Fee payer for the Arch transaction — must be anchored and included in the
-    // BTC transaction so the validator accepts it. System-owned, so it is signed
-    // via sign_input + invoke (not InputToSign, which is for program-owned PDAs).
-    let fee_payer_info = next_account_info(account_info_iter)?;
 
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
@@ -984,16 +983,16 @@ fn process_btc_transfer_with_winternitz<'a>(
         return Err(QuipError::AccountNotWritable.into());
     }
 
-    // Verify payer is signer
-    if !payer_info.is_signer {
+    // Verify owner is signer (required for WOTS+ authorization)
+    if !owner_info.is_signer {
         return Err(QuipError::UnauthorizedSigner.into());
     }
 
-    let payer_bytes = pubkey_to_bytes(payer_info.key);
+    let owner_bytes = pubkey_to_bytes(owner_info.key);
 
     // Verify account derivations
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
-    let _ = crate::utils::verify_wallet_address(program_id, &payer_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
+    let _ = crate::utils::verify_wallet_address(program_id, &owner_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
     // Load states
     let factory_data = factory_info.try_borrow_data()?;
@@ -1014,8 +1013,8 @@ fn process_btc_transfer_with_winternitz<'a>(
         return Err(QuipError::AccountNotInitialized.into());
     }
 
-    // Verify payer is wallet owner
-    if payer_bytes != wallet.owner {
+    // Verify caller is wallet owner
+    if owner_bytes != wallet.owner {
         return Err(QuipError::UnauthorizedSigner.into());
     }
 
@@ -1112,9 +1111,9 @@ fn process_btc_transfer_with_winternitz<'a>(
     // the recipient output last.
     //
     // Layout:
-    //   Input 0 / Output 0 : wallet   (manual — custom change)
-    //   Input 1 / Output 1 : factory  (add_state_transition — pass-through)
-    //   Input 2 / Output 2 : fee_payer (manual — pass-through, signed via sign_input)
+    //   Input 0 / Output 0 : wallet  (manual — custom change)
+    //   Input 1 / Output 1 : factory (add_state_transition — pass-through)
+    //   Input 2 / Output 2 : owner   (manual — pass-through, signed via sign_input)
     //   Input 3 / ---      : fee input (pre-signed by client)
     //   ---     / Output 3 : recipient (BTC transfer destination)
 
@@ -1148,25 +1147,25 @@ fn process_btc_transfer_with_winternitz<'a>(
     // Input 1 + Output 1: factory state transition (pass-through)
     add_state_transition(&mut btc_tx, factory_info)?;
 
-    // Input 2 + Output 2: fee payer pass-through (signed via sign_input)
-    let fp_utxo_value = get_bitcoin_tx_output_value(
-        fee_payer_info.utxo.txid_big_endian(),
-        fee_payer_info.utxo.vout(),
+    // Input 2 + Output 2: owner pass-through (signed via sign_input)
+    let owner_utxo_value = get_bitcoin_tx_output_value(
+        owner_info.utxo.txid_big_endian(),
+        owner_info.utxo.vout(),
     )
     .ok_or::<ProgramError>(QuipError::InsufficientBtcBalance.into())?;
     btc_tx.input.push(TxIn {
         previous_output: OutPoint {
-            txid: fee_payer_info.utxo.to_txid(),
-            vout: fee_payer_info.utxo.vout(),
+            txid: owner_info.utxo.to_txid(),
+            vout: owner_info.utxo.vout(),
         },
         script_sig: ScriptBuf::default(),
         sequence: Sequence::MAX,
         witness: Witness::default(),
     });
     btc_tx.output.push(TxOut {
-        value: Amount::from_sat(fp_utxo_value),
+        value: Amount::from_sat(owner_utxo_value),
         script_pubkey: ScriptBuf::from_bytes(
-            get_account_script_pubkey(fee_payer_info.key).to_vec(),
+            get_account_script_pubkey(owner_info.key).to_vec(),
         ),
     });
 
@@ -1192,12 +1191,12 @@ fn process_btc_transfer_with_winternitz<'a>(
     ];
     set_transaction_to_sign(accounts, &btc_tx, &inputs_to_sign)?;
 
-    // Sign the fee payer's BTC input (index 2). The fee payer is system-owned,
+    // Sign the owner's BTC input (index 2). The owner is system-owned,
     // not a program PDA, so it can't be included in InputToSign. Instead we use
     // sign_input + invoke, which delegates signing to the system program using
-    // the fee payer's signer authority from the Arch transaction.
-    let ix = sign_input(2, fee_payer_info.key);
-    invoke(&ix, &[fee_payer_info.clone()])?;
+    // the owner's signer authority from the Arch transaction.
+    let ix = sign_input(2, owner_info.key);
+    invoke(&ix, &[owner_info.clone()])?;
 
     msg!(
         "BTC transfer of {} sats with vault_id: {}",
