@@ -21,16 +21,17 @@ use arch_program::{
         self, absolute::LockTime, transaction::Version,
         Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
     },
-    bitcoin::hashes::Hash,
+    helper::add_state_transition,
     input_to_sign::InputToSign,
     instruction::Instruction,
     msg,
     program::{
         get_account_script_pubkey, get_bitcoin_block_height, get_bitcoin_tx_output_value,
-        invoke_signed, set_transaction_to_sign,
+        invoke, invoke_signed, set_transaction_to_sign,
     },
     program_error::ProgramError,
     pubkey::Pubkey,
+    system_instruction::sign_input,
 };
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -40,6 +41,12 @@ use crate::state::*;
 
 /// Program result type
 pub type ProgramResult = Result<(), ProgramError>;
+
+/// Bitcoin dust limit for P2TR (Taproot) outputs.
+/// Outputs below this value are rejected by Bitcoin nodes as non-standard.
+/// Confirmed via integration tests: 0-sat change outputs cause the Arch
+/// runtime to silently revert all program state changes.
+const BTC_DUST_LIMIT: u64 = 330;
 
 /// Helper to convert Pubkey to bytes
 fn pubkey_to_bytes(pubkey: &Pubkey) -> [u8; 32] {
@@ -954,6 +961,10 @@ fn process_btc_transfer_with_winternitz<'a>(
     let wallet_info = next_account_info(account_info_iter)?;
     let payer_info = next_account_info(account_info_iter)?;
     let system_program_info = next_account_info(account_info_iter)?;
+    // Fee payer for the Arch transaction — must be anchored and included in the
+    // BTC transaction so the validator accepts it. System-owned, so it is signed
+    // via sign_input + invoke (not InputToSign, which is for program-owned PDAs).
+    let fee_payer_info = next_account_info(account_info_iter)?;
 
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
@@ -965,6 +976,10 @@ fn process_btc_transfer_with_winternitz<'a>(
     if wallet_info.owner != program_id {
         return Err(QuipError::IncorrectProgramOwner.into());
     }
+    // Both wallet and factory must be writable: wallet for state + UTXO update,
+    // factory for lamport fee collection. Both are program-owned PDAs, so
+    // set_transaction_to_sign can update their UTXOs. They are included in the
+    // BTC transaction to satisfy Arch's anchoring requirement.
     if !factory_info.is_writable || !wallet_info.is_writable {
         return Err(QuipError::AccountNotWritable.into());
     }
@@ -1028,26 +1043,27 @@ fn process_btc_transfer_with_winternitz<'a>(
     }
 
     // Get wallet's current UTXO value
-    let wallet_utxo = wallet_info.utxo.clone();
-    let utxo_txid: [u8; 32] = wallet_utxo.txid().try_into()
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    let utxo_vout = wallet_utxo.vout();
+    let utxo_value = get_bitcoin_tx_output_value(
+        wallet_info.utxo.txid_big_endian(),
+        wallet_info.utxo.vout(),
+    )
+    .ok_or::<ProgramError>(QuipError::InsufficientBtcBalance.into())?;
 
-    let utxo_value = get_bitcoin_tx_output_value(utxo_txid, utxo_vout)
+    // Verify sufficient BTC balance.
+    // The change output must stay above the Bitcoin dust limit (330 sats for P2TR)
+    // because Bitcoin nodes reject transactions with sub-dust outputs as non-standard.
+    // This means the maximum transferable amount is (utxo_value - BTC_DUST_LIMIT).
+    let max_transfer = utxo_value
+        .checked_sub(BTC_DUST_LIMIT)
         .ok_or::<ProgramError>(QuipError::InsufficientBtcBalance.into())?;
-
-    // Verify sufficient BTC balance
-    if utxo_value < amount {
+    if amount > max_transfer {
         return Err(QuipError::InsufficientBtcBalance.into());
     }
 
-    // Compute change (must be > 0, v1 does not support full UTXO drain)
+    // Compute wallet change (guaranteed >= BTC_DUST_LIMIT by the check above)
     let wallet_change = utxo_value
         .checked_sub(amount)
         .ok_or(ProgramError::ArithmeticOverflow)?;
-    if wallet_change == 0 {
-        return Err(QuipError::InsufficientBtcBalance.into());
-    }
 
     // Deserialize the fee transaction and extract its first input as the fee input
     let fee_transaction: Transaction = bitcoin::consensus::deserialize(&fee_tx)
@@ -1056,52 +1072,19 @@ fn process_btc_transfer_with_winternitz<'a>(
         .ok_or(ProgramError::InvalidInstructionData)?
         .clone();
 
-    // Get the wallet PDA's script_pubkey for the change output
-    let wallet_script_bytes = get_account_script_pubkey(wallet_info.key);
-    let wallet_script = ScriptBuf::from_bytes(wallet_script_bytes.to_vec());
+    // --- State mutations (must happen BEFORE add_state_transition) ---
 
-    // Build the Bitcoin transaction
-    let btc_tx = Transaction {
-        version: Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![
-            // Input 0: wallet's current UTXO
-            TxIn {
-                previous_output: OutPoint {
-                    txid: bitcoin::Txid::from_byte_array(utxo_txid),
-                    vout: utxo_vout,
-                },
-                script_sig: ScriptBuf::default(),
-                sequence: Sequence::MAX,
-                witness: Witness::default(),
-            },
-            // Input 1: fee input (from client-provided fee_tx)
-            fee_input,
-        ],
-        output: vec![
-            // Output 0: wallet change (new UTXO for wallet)
-            TxOut {
-                value: Amount::from_sat(wallet_change),
-                script_pubkey: wallet_script,
-            },
-            // Output 1: recipient
-            TxOut {
-                value: Amount::from_sat(amount),
-                script_pubkey: ScriptBuf::from_bytes(recipient_script_pubkey.clone()),
-            },
-        ],
-    };
-
-    // Charge lamport transfer fee from wallet to factory
+    // Charge lamport transfer fee from wallet to factory.
+    // Both are program-owned PDAs, so direct lamport manipulation works.
     crate::utils::transfer_value(wallet_info, factory_info, factory.transfer_fee)?;
 
-    // Update accumulated fees
+    // Update factory accumulated fees
     factory.accumulated_fees = factory
         .accumulated_fees
         .checked_add(factory.transfer_fee)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    // Update wallet state
+    // Rotate WOTS+ key (critical: each key must only be used once)
     wallet.pq_owner = pq_next;
     wallet.transaction_count = wallet
         .transaction_count
@@ -1120,13 +1103,101 @@ fn process_btc_transfer_with_winternitz<'a>(
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(wallet_data);
 
-    // Set the transaction for Arch validator network to threshold-sign
-    // Only input 0 (wallet's UTXO) needs signing by the wallet PDA
-    let inputs_to_sign = vec![InputToSign {
-        index: 0,
-        signer: wallet_info.key.clone(),
-    }];
+    // --- Build Bitcoin transaction ---
+    //
+    // CRITICAL LAYOUT CONSTRAINT: set_transaction_to_sign uses InputToSign.index
+    // as BOTH the input index to sign AND the output vout for the account's new
+    // UTXO. Therefore, each signed account's input and output MUST be at the same
+    // index. We achieve this by placing account pass-through outputs first, then
+    // the recipient output last.
+    //
+    // Layout:
+    //   Input 0 / Output 0 : wallet   (manual — custom change)
+    //   Input 1 / Output 1 : factory  (add_state_transition — pass-through)
+    //   Input 2 / Output 2 : fee_payer (manual — pass-through, signed via sign_input)
+    //   Input 3 / ---      : fee input (pre-signed by client)
+    //   ---     / Output 3 : recipient (BTC transfer destination)
+
+    let wallet_script_bytes = get_account_script_pubkey(wallet_info.key);
+    let wallet_script = ScriptBuf::from_bytes(wallet_script_bytes.to_vec());
+
+    let mut btc_tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![
+            // Input 0: wallet's current UTXO (manual — custom change amount)
+            TxIn {
+                previous_output: OutPoint {
+                    txid: wallet_info.utxo.to_txid(),
+                    vout: wallet_info.utxo.vout(),
+                },
+                script_sig: ScriptBuf::default(),
+                sequence: Sequence::MAX,
+                witness: Witness::default(),
+            },
+        ],
+        output: vec![
+            // Output 0: wallet change (must be at same index as wallet input)
+            TxOut {
+                value: Amount::from_sat(wallet_change),
+                script_pubkey: wallet_script,
+            },
+        ],
+    };
+
+    // Input 1 + Output 1: factory state transition (pass-through)
+    add_state_transition(&mut btc_tx, factory_info)?;
+
+    // Input 2 + Output 2: fee payer pass-through (signed via sign_input)
+    let fp_utxo_value = get_bitcoin_tx_output_value(
+        fee_payer_info.utxo.txid_big_endian(),
+        fee_payer_info.utxo.vout(),
+    )
+    .ok_or::<ProgramError>(QuipError::InsufficientBtcBalance.into())?;
+    btc_tx.input.push(TxIn {
+        previous_output: OutPoint {
+            txid: fee_payer_info.utxo.to_txid(),
+            vout: fee_payer_info.utxo.vout(),
+        },
+        script_sig: ScriptBuf::default(),
+        sequence: Sequence::MAX,
+        witness: Witness::default(),
+    });
+    btc_tx.output.push(TxOut {
+        value: Amount::from_sat(fp_utxo_value),
+        script_pubkey: ScriptBuf::from_bytes(
+            get_account_script_pubkey(fee_payer_info.key).to_vec(),
+        ),
+    });
+
+    // Output 3: recipient (placed after all account outputs to preserve index alignment)
+    btc_tx.output.push(TxOut {
+        value: Amount::from_sat(amount),
+        script_pubkey: ScriptBuf::from_bytes(recipient_script_pubkey.clone()),
+    });
+
+    // Input 3: fee input (pre-signed by client, covers BTC mining fee)
+    btc_tx.input.push(fee_input);
+
+    // Threshold-sign program-owned PDA inputs (wallet + factory).
+    let inputs_to_sign = vec![
+        InputToSign {
+            index: 0,
+            signer: wallet_info.key.clone(),
+        },
+        InputToSign {
+            index: 1,
+            signer: factory_info.key.clone(),
+        },
+    ];
     set_transaction_to_sign(accounts, &btc_tx, &inputs_to_sign)?;
+
+    // Sign the fee payer's BTC input (index 2). The fee payer is system-owned,
+    // not a program PDA, so it can't be included in InputToSign. Instead we use
+    // sign_input + invoke, which delegates signing to the system program using
+    // the fee payer's signer authority from the Arch transaction.
+    let ix = sign_input(2, fee_payer_info.key);
+    invoke(&ix, &[fee_payer_info.clone()])?;
 
     msg!(
         "BTC transfer of {} sats with vault_id: {}",
