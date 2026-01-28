@@ -3474,13 +3474,10 @@ mod quip_tests {
 
         let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
         let (owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
-        let (fee_payer_keypair, fee_payer_pubkey, _) = generate_new_keypair(config.network);
-
 
         // Fund accounts
         client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
         client.create_and_fund_account_with_faucet(&owner_keypair).unwrap();
-        client.create_and_fund_account_with_faucet(&fee_payer_keypair).unwrap();
 
         // Deploy program
         let deployer = ProgramDeployer::new(&config);
@@ -3584,32 +3581,33 @@ mod quip_tests {
         client.wait_for_processed_transaction(&txid).unwrap();
         println!("Wallet created with {} lamport deposit", initial_deposit);
 
-        // Capture balances before BTC transfer
-        let wallet_balance_before = client.read_account_info(wallet_pubkey).unwrap().lamports;
-        let factory_balance_before = client.read_account_info(factory_pubkey).unwrap().lamports;
-        println!("Wallet lamport balance before: {}", wallet_balance_before);
-        println!("Factory lamport balance before: {}", factory_balance_before);
-
-        // Prepare fee transaction and recipient script_pubkey
-
-        // Anchor the fee payer to a Bitcoin UTXO — Arch requires all accounts
-        // in a BTC-linked transaction to be anchored, including the fee payer.
-        let (fp_txid, fp_vout) = helper.send_utxo(fee_payer_pubkey).unwrap();
+        // Anchor the owner to a Bitcoin UTXO — since the owner is also the Arch tx
+        // fee payer (implicitly writable), they must be anchored and included in
+        // the BTC transaction.
+        let (owner_txid, owner_vout) = helper.send_utxo(owner_pubkey).unwrap();
         let anchor_ix = system_instruction::anchor(
-            &fee_payer_pubkey,
-            hex::decode(&fp_txid).unwrap().try_into().unwrap(),
-            fp_vout,
+            &owner_pubkey,
+            hex::decode(&owner_txid).unwrap().try_into().unwrap(),
+            owner_vout,
         );
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
         let tx = build_and_sign_transaction(
-            ArchMessage::new(&[anchor_ix], Some(fee_payer_pubkey), recent_blockhash),
-            vec![fee_payer_keypair.clone()],
+            ArchMessage::new(&[anchor_ix], Some(owner_pubkey), recent_blockhash),
+            vec![owner_keypair.clone()],
             config.network,
         ).unwrap();
         let txid = client.send_transaction(tx).unwrap();
         client.wait_for_processed_transaction(&txid).unwrap();
 
         let fee_tx = prepare_fees_and_wait(&helper);
+
+        // Capture balances before BTC transfer (after anchoring, so we isolate the BTC transfer fees)
+        let wallet_balance_before = client.read_account_info(wallet_pubkey).unwrap().lamports;
+        let factory_balance_before = client.read_account_info(factory_pubkey).unwrap().lamports;
+        let owner_balance_before = client.read_account_info(owner_pubkey).unwrap().lamports;
+        println!("Wallet lamport balance before: {}", wallet_balance_before);
+        println!("Factory lamport balance before: {}", factory_balance_before);
+        println!("Owner lamport balance before: {}", owner_balance_before);
 
         // Recipient script_pubkey: use a simple P2WPKH-style script (0x0014 + 20-byte hash)
         let recipient_script_pubkey: Vec<u8> = {
@@ -3642,9 +3640,8 @@ mod quip_tests {
 
         let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(BTC_TRANSFER_COMPUTE_BUDGET);
 
-        // Use a separate fee_payer for the Arch transaction so the owner is NOT
-        // implicitly writable (fee payers are always writable in Arch/Solana).
-        // This avoids the anchoring requirement for the owner account.
+        // The owner is the Arch tx fee payer, so they're implicitly writable and
+        // must be anchored. Their UTXO is included in the BTC transaction.
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
         let tx = build_and_sign_transaction(
             ArchMessage::new(
@@ -3655,17 +3652,16 @@ mod quip_tests {
                         accounts: vec![
                             AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
                             AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
-                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: false },
+                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
                             AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                            AccountMeta { pubkey: fee_payer_pubkey, is_signer: true, is_writable: true },
                         ],
                         data: instruction_data,
                     },
                 ],
-                Some(fee_payer_pubkey),
+                Some(owner_pubkey),
                 recent_blockhash,
             ),
-            vec![fee_payer_keypair, owner_keypair],
+            vec![owner_keypair],
             config.network,
         ).unwrap();
 
@@ -3679,11 +3675,14 @@ mod quip_tests {
         // Verify lamport fee was collected from wallet to factory
         let wallet_balance_after = client.read_account_info(wallet_pubkey).unwrap().lamports;
         let factory_balance_after = client.read_account_info(factory_pubkey).unwrap().lamports;
+        let owner_balance_after = client.read_account_info(owner_pubkey).unwrap().lamports;
         println!("Wallet lamport balance after: {}", wallet_balance_after);
         println!("Factory lamport balance after: {}", factory_balance_after);
+        println!("Owner lamport balance after: {}", owner_balance_after);
 
         let wallet_balance_decrease = wallet_balance_before - wallet_balance_after;
         let factory_balance_increase = factory_balance_after - factory_balance_before;
+        let owner_balance_decrease = owner_balance_before - owner_balance_after;
         assert_eq!(
             wallet_balance_decrease, transfer_fee,
             "Wallet should have been debited exactly transfer_fee ({}) lamports",
@@ -3694,6 +3693,12 @@ mod quip_tests {
             "Factory should have received exactly transfer_fee ({}) lamports",
             transfer_fee
         );
+        assert!(
+            owner_balance_decrease > 0,
+            "Owner should have paid Arch tx fees (balance decreased by {} lamports)",
+            owner_balance_decrease
+        );
+        println!("Owner paid {} lamports in Arch tx fees", owner_balance_decrease);
 
         // Verify factory accumulated_fees was updated.
         // accumulated_fees includes the creation_fee (1000) from DepositToWinternitz
@@ -3746,13 +3751,10 @@ mod quip_tests {
 
         let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
         let (owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
-        let (fee_payer_keypair, fee_payer_pubkey, _) = generate_new_keypair(config.network);
-
 
         // Fund accounts
         client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
         client.create_and_fund_account_with_faucet(&owner_keypair).unwrap();
-        client.create_and_fund_account_with_faucet(&fee_payer_keypair).unwrap();
 
         // Deploy program
         let deployer = ProgramDeployer::new(&config);
@@ -3856,31 +3858,33 @@ mod quip_tests {
         client.wait_for_processed_transaction(&txid).unwrap();
         println!("Wallet created with {} lamport deposit", initial_deposit);
 
-        // Capture balances before BTC transfer
-        let wallet_balance_before = client.read_account_info(wallet_pubkey).unwrap().lamports;
-        let factory_balance_before = client.read_account_info(factory_pubkey).unwrap().lamports;
-        println!("Wallet lamport balance before: {}", wallet_balance_before);
-        println!("Factory lamport balance before: {}", factory_balance_before);
-
-        // Prepare fee transaction and recipient script_pubkey
-        // Anchor the fee payer to a Bitcoin UTXO — Arch requires all accounts
-        // in a BTC-linked transaction to be anchored, including the fee payer.
-        let (fp_txid, fp_vout) = helper.send_utxo(fee_payer_pubkey).unwrap();
+        // Anchor the owner to a Bitcoin UTXO — since the owner is also the Arch tx
+        // fee payer (implicitly writable), they must be anchored and included in
+        // the BTC transaction.
+        let (owner_txid, owner_vout) = helper.send_utxo(owner_pubkey).unwrap();
         let anchor_ix = system_instruction::anchor(
-            &fee_payer_pubkey,
-            hex::decode(&fp_txid).unwrap().try_into().unwrap(),
-            fp_vout,
+            &owner_pubkey,
+            hex::decode(&owner_txid).unwrap().try_into().unwrap(),
+            owner_vout,
         );
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
         let tx = build_and_sign_transaction(
-            ArchMessage::new(&[anchor_ix], Some(fee_payer_pubkey), recent_blockhash),
-            vec![fee_payer_keypair.clone()],
+            ArchMessage::new(&[anchor_ix], Some(owner_pubkey), recent_blockhash),
+            vec![owner_keypair.clone()],
             config.network,
         ).unwrap();
         let txid = client.send_transaction(tx).unwrap();
         client.wait_for_processed_transaction(&txid).unwrap();
 
         let fee_tx = prepare_fees_and_wait(&helper);
+
+        // Capture balances before BTC transfer (after anchoring, so we isolate the BTC transfer fees)
+        let wallet_balance_before = client.read_account_info(wallet_pubkey).unwrap().lamports;
+        let factory_balance_before = client.read_account_info(factory_pubkey).unwrap().lamports;
+        let owner_balance_before = client.read_account_info(owner_pubkey).unwrap().lamports;
+        println!("Wallet lamport balance before: {}", wallet_balance_before);
+        println!("Factory lamport balance before: {}", factory_balance_before);
+        println!("Owner lamport balance before: {}", owner_balance_before);
 
         let recipient_script_pubkey: Vec<u8> = {
             let mut script = vec![0x00, 0x14]; // OP_0, PUSH20
@@ -3917,6 +3921,8 @@ mod quip_tests {
 
         let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(BTC_TRANSFER_COMPUTE_BUDGET);
 
+        // The owner is the Arch tx fee payer, so they're implicitly writable and
+        // must be anchored. Their UTXO is included in the BTC transaction.
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
         let tx = build_and_sign_transaction(
             ArchMessage::new(
@@ -3927,17 +3933,16 @@ mod quip_tests {
                         accounts: vec![
                             AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
                             AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
-                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: false },
+                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
                             AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                            AccountMeta { pubkey: fee_payer_pubkey, is_signer: true, is_writable: true },
                         ],
                         data: instruction_data,
                     },
                 ],
-                Some(fee_payer_pubkey),
+                Some(owner_pubkey),
                 recent_blockhash,
             ),
-            vec![fee_payer_keypair, owner_keypair],
+            vec![owner_keypair],
             config.network,
         ).unwrap();
 
@@ -3950,11 +3955,14 @@ mod quip_tests {
         // Verify lamport fee was collected from wallet to factory
         let wallet_balance_after = client.read_account_info(wallet_pubkey).unwrap().lamports;
         let factory_balance_after = client.read_account_info(factory_pubkey).unwrap().lamports;
+        let owner_balance_after = client.read_account_info(owner_pubkey).unwrap().lamports;
         println!("Wallet lamport balance after: {}", wallet_balance_after);
         println!("Factory lamport balance after: {}", factory_balance_after);
+        println!("Owner lamport balance after: {}", owner_balance_after);
 
         let wallet_balance_decrease = wallet_balance_before - wallet_balance_after;
         let factory_balance_increase = factory_balance_after - factory_balance_before;
+        let owner_balance_decrease = owner_balance_before - owner_balance_after;
         assert_eq!(
             wallet_balance_decrease, transfer_fee,
             "Wallet should have been debited exactly transfer_fee ({}) lamports",
@@ -3965,6 +3973,12 @@ mod quip_tests {
             "Factory should have received exactly transfer_fee ({}) lamports",
             transfer_fee
         );
+        assert!(
+            owner_balance_decrease > 0,
+            "Owner should have paid Arch tx fees (balance decreased by {} lamports)",
+            owner_balance_decrease
+        );
+        println!("Owner paid {} lamports in Arch tx fees", owner_balance_decrease);
 
         // Check whether the Bitcoin network accepted the transaction.
         // Change output is 330 sats (P2TR dust limit) — should be accepted.
@@ -4006,12 +4020,10 @@ mod quip_tests {
 
         let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
         let (owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
-        let (fee_payer_keypair, fee_payer_pubkey, _) = generate_new_keypair(config.network);
 
         // Fund and deploy
         client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
         client.create_and_fund_account_with_faucet(&owner_keypair).unwrap();
-        client.create_and_fund_account_with_faucet(&fee_payer_keypair).unwrap();
 
         let deployer = ProgramDeployer::new(&config);
         let program_pubkey = deployer
@@ -4112,22 +4124,22 @@ mod quip_tests {
         client.wait_for_processed_transaction(&txid).unwrap();
         println!("Wallet created");
 
-        // Anchor fee payer
-        let (fp_txid, fp_vout) = helper.send_utxo(fee_payer_pubkey).unwrap();
+        // Anchor owner
+        let (owner_txid, owner_vout) = helper.send_utxo(owner_pubkey).unwrap();
         let anchor_ix = system_instruction::anchor(
-            &fee_payer_pubkey,
-            hex::decode(&fp_txid).unwrap().try_into().unwrap(),
-            fp_vout,
+            &owner_pubkey,
+            hex::decode(&owner_txid).unwrap().try_into().unwrap(),
+            owner_vout,
         );
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
         let tx = build_and_sign_transaction(
-            ArchMessage::new(&[anchor_ix], Some(fee_payer_pubkey), recent_blockhash),
-            vec![fee_payer_keypair.clone()],
+            ArchMessage::new(&[anchor_ix], Some(owner_pubkey), recent_blockhash),
+            vec![owner_keypair.clone()],
             config.network,
         ).unwrap();
         let txid = client.send_transaction(tx).unwrap();
         client.wait_for_processed_transaction(&txid).unwrap();
-        println!("Fee payer anchored");
+        println!("Owner anchored");
 
         // Attempt BTC transfer with invalid signature
         let fee_tx = prepare_fees_and_wait(&helper);
@@ -4161,17 +4173,16 @@ mod quip_tests {
                         accounts: vec![
                             AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
                             AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
-                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: false },
+                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
                             AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                            AccountMeta { pubkey: fee_payer_pubkey, is_signer: true, is_writable: true },
                         ],
                         data: instruction_data,
                     },
                 ],
-                Some(fee_payer_pubkey),
+                Some(owner_pubkey),
                 recent_blockhash,
             ),
-            vec![fee_payer_keypair, owner_keypair],
+            vec![owner_keypair],
             config.network,
         ).unwrap();
 
@@ -4205,12 +4216,10 @@ mod quip_tests {
 
         let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
         let (owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
-        let (fee_payer_keypair, fee_payer_pubkey, _) = generate_new_keypair(config.network);
 
         // Fund and deploy
         client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
         client.create_and_fund_account_with_faucet(&owner_keypair).unwrap();
-        client.create_and_fund_account_with_faucet(&fee_payer_keypair).unwrap();
 
         let deployer = ProgramDeployer::new(&config);
         let program_pubkey = deployer
@@ -4311,22 +4320,22 @@ mod quip_tests {
         client.wait_for_processed_transaction(&txid).unwrap();
         println!("Wallet created");
 
-        // Anchor fee payer
-        let (fp_txid, fp_vout) = helper.send_utxo(fee_payer_pubkey).unwrap();
+        // Anchor owner
+        let (owner_txid, owner_vout) = helper.send_utxo(owner_pubkey).unwrap();
         let anchor_ix = system_instruction::anchor(
-            &fee_payer_pubkey,
-            hex::decode(&fp_txid).unwrap().try_into().unwrap(),
-            fp_vout,
+            &owner_pubkey,
+            hex::decode(&owner_txid).unwrap().try_into().unwrap(),
+            owner_vout,
         );
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
         let tx = build_and_sign_transaction(
-            ArchMessage::new(&[anchor_ix], Some(fee_payer_pubkey), recent_blockhash),
-            vec![fee_payer_keypair.clone()],
+            ArchMessage::new(&[anchor_ix], Some(owner_pubkey), recent_blockhash),
+            vec![owner_keypair.clone()],
             config.network,
         ).unwrap();
         let txid = client.send_transaction(tx).unwrap();
         client.wait_for_processed_transaction(&txid).unwrap();
-        println!("Fee payer anchored");
+        println!("Owner anchored");
 
         // Attempt BTC transfer with amount > UTXO value
         // send_utxo creates 3000-sat UTXO; try to transfer 5000
@@ -4368,17 +4377,16 @@ mod quip_tests {
                         accounts: vec![
                             AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
                             AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
-                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: false },
+                            AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
                             AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                            AccountMeta { pubkey: fee_payer_pubkey, is_signer: true, is_writable: true },
                         ],
                         data: instruction_data,
                     },
                 ],
-                Some(fee_payer_pubkey),
+                Some(owner_pubkey),
                 recent_blockhash,
             ),
-            vec![fee_payer_keypair, owner_keypair],
+            vec![owner_keypair],
             config.network,
         ).unwrap();
 
@@ -4413,14 +4421,11 @@ mod quip_tests {
         let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(config.network);
         let (owner_keypair, owner_pubkey, _) = generate_new_keypair(config.network);
         let (attacker_keypair, attacker_pubkey, _) = generate_new_keypair(config.network);
-        let (fee_payer_keypair, fee_payer_pubkey, _) = generate_new_keypair(config.network);
-
 
         // Fund accounts
         client.create_and_fund_account_with_faucet(&authority_keypair).unwrap();
         client.create_and_fund_account_with_faucet(&owner_keypair).unwrap();
         client.create_and_fund_account_with_faucet(&attacker_keypair).unwrap();
-        client.create_and_fund_account_with_faucet(&fee_payer_keypair).unwrap();
 
         // Deploy program
         let deployer = ProgramDeployer::new(&config);
@@ -4522,24 +4527,24 @@ mod quip_tests {
         client.wait_for_processed_transaction(&txid).unwrap();
         println!("Wallet created (owned by owner)");
 
-        // Anchor fee payer
-        let (fp_txid, fp_vout) = helper.send_utxo(fee_payer_pubkey).unwrap();
+        // Anchor attacker (they will be the Arch tx fee payer)
+        let (attacker_txid, attacker_vout) = helper.send_utxo(attacker_pubkey).unwrap();
         let anchor_ix = system_instruction::anchor(
-            &fee_payer_pubkey,
-            hex::decode(&fp_txid).unwrap().try_into().unwrap(),
-            fp_vout,
+            &attacker_pubkey,
+            hex::decode(&attacker_txid).unwrap().try_into().unwrap(),
+            attacker_vout,
         );
         let recent_blockhash = client.get_best_finalized_block_hash().unwrap();
         let tx = build_and_sign_transaction(
-            ArchMessage::new(&[anchor_ix], Some(fee_payer_pubkey), recent_blockhash),
-            vec![fee_payer_keypair.clone()],
+            ArchMessage::new(&[anchor_ix], Some(attacker_pubkey), recent_blockhash),
+            vec![attacker_keypair.clone()],
             config.network,
         ).unwrap();
         let txid = client.send_transaction(tx).unwrap();
         client.wait_for_processed_transaction(&txid).unwrap();
-        println!("Fee payer anchored");
+        println!("Attacker anchored");
 
-        // Attacker attempts BTC transfer using their own key as payer
+        // Attacker attempts BTC transfer using their own key as owner
         let fee_tx = prepare_fees_and_wait(&helper);
 
         let recipient_script_pubkey: Vec<u8> = {
@@ -4580,17 +4585,16 @@ mod quip_tests {
                         accounts: vec![
                             AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
                             AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
-                            AccountMeta { pubkey: attacker_pubkey, is_signer: true, is_writable: false },
+                            AccountMeta { pubkey: attacker_pubkey, is_signer: true, is_writable: true },
                             AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
-                            AccountMeta { pubkey: fee_payer_pubkey, is_signer: true, is_writable: true },
                         ],
                         data: instruction_data,
                     },
                 ],
-                Some(fee_payer_pubkey),
+                Some(attacker_pubkey),
                 recent_blockhash,
             ),
-            vec![fee_payer_keypair, attacker_keypair],
+            vec![attacker_keypair],
             config.network,
         ).unwrap();
 
