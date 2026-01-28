@@ -1635,11 +1635,13 @@ version = "0.1.0"
 dependencies = [
  "arch_program",
  "arch_sdk",
+ "bitcoincore-rpc",
  "borsh",
  "hashsigs-rs",
  "hex",
  "serial_test",
  "thiserror 1.0.69",
+ "titan-client",
  "tokio",
 ]
 
