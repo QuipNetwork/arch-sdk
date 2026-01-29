@@ -43,6 +43,7 @@ mod quip_tests {
     use hashsigs::WOTSPlus;
     use serial_test::serial;
 
+    use crate::error::QuipError;
     use crate::instruction::QuipInstruction;
     use crate::state::{
         QuipFactory, QuipWallet,
@@ -567,6 +568,23 @@ mod quip_tests {
         script
     }
 
+    /// Assert that a transaction failed with the expected QuipError
+    fn assert_error(status: &Status, expected: QuipError) {
+        let expected_code = expected.clone() as u32;
+        let expected_str = format!("custom program error: 0x{:x}", expected_code);
+
+        match status {
+            Status::Failed(err) => {
+                assert!(
+                    err.contains(&expected_str),
+                    "Expected {:?}, got: {}",
+                    expected, err
+                );
+            }
+            _ => panic!("Expected {:?}, got: {:?}", expected, status),
+        }
+    }
+
     /// Execute a withdraw fees operation
     fn execute_withdraw_fees(
         ctx: &TestContext,
@@ -745,10 +763,7 @@ mod quip_tests {
         let processed_tx2 = ctx.client.wait_for_processed_transaction(&txid2).unwrap();
         println!("Second initialization status: {:?}", processed_tx2.status);
 
-        assert!(
-            matches!(processed_tx2.status, Status::Failed(_)),
-            "Second initialization should fail"
-        );
+        assert_error(&processed_tx2.status, QuipError::FactoryAlreadyInitialized);
 
         println!("\n=== Test PASSED: Initialize Factory Already Initialized ===\n");
     }
@@ -1195,10 +1210,7 @@ mod quip_tests {
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
         println!("Transfer status: {:?}", processed_tx.status);
 
-        assert!(
-            matches!(processed_tx.status, Status::Failed(_)),
-            "Transfer with invalid signature should fail"
-        );
+        assert_error(&processed_tx.status, QuipError::InvalidWotsSignature);
 
         println!("\n=== Test PASSED: Transfer Invalid Signature ===\n");
     }
@@ -1312,10 +1324,7 @@ mod quip_tests {
             9999, 9999, 9999,
         );
 
-        assert!(
-            matches!(status, Status::Failed(_)),
-            "Unauthorized fee update should fail"
-        );
+        assert_error(&status, QuipError::UnauthorizedSigner);
 
         println!("\n=== Test PASSED: Update Fees Unauthorized ===\n");
     }
@@ -1430,10 +1439,7 @@ mod quip_tests {
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
         println!("Old admin fee update status: {:?}", processed_tx.status);
 
-        assert!(
-            matches!(processed_tx.status, Status::Failed(_)),
-            "Old admin should not be able to update fees"
-        );
+        assert_error(&processed_tx.status, QuipError::UnauthorizedSigner);
 
         println!("\n=== Test PASSED: Transfer Ownership ===\n");
     }
@@ -1494,10 +1500,7 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        assert!(
-            matches!(processed_tx.status, Status::Failed(_)),
-            "Fake system program should be rejected"
-        );
+        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
 
         println!("\n=== Test PASSED: Fake System Program Rejected ===\n");
     }
@@ -1540,10 +1543,7 @@ mod quip_tests {
             &payer_keypair, payer_pubkey, vault_id, &pq_key, &pq_next, &private_key, transfer_amount,
         );
 
-        assert!(
-            matches!(status, Status::Failed(_)),
-            "Transfer with insufficient balance should fail"
-        );
+        assert_error(&status, QuipError::InsufficientFunds);
 
         println!("\n=== Test PASSED: TransferWithWinternitz Insufficient Balance ===\n");
     }
@@ -1619,10 +1619,7 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        assert!(
-            matches!(processed_tx.status, Status::Failed(_)),
-            "Unauthorized transfer should fail"
-        );
+        assert_error(&processed_tx.status, QuipError::UnauthorizedSigner);
 
         println!("\n=== Test PASSED: TransferWithWinternitz Unauthorized ===\n");
     }
@@ -1691,10 +1688,7 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        assert!(
-            matches!(processed_tx.status, Status::Failed(_)),
-            "Key change with invalid signature should fail"
-        );
+        assert_error(&processed_tx.status, QuipError::InvalidWotsSignature);
 
         println!("\n=== Test PASSED: ChangePqOwner Invalid Signature ===\n");
     }
@@ -1763,10 +1757,7 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        assert!(
-            matches!(processed_tx.status, Status::Failed(_)),
-            "Unauthorized key change should fail"
-        );
+        assert_error(&processed_tx.status, QuipError::UnauthorizedSigner);
 
         println!("\n=== Test PASSED: ChangePqOwner Unauthorized ===\n");
     }
@@ -1866,10 +1857,7 @@ mod quip_tests {
             &attacker_keypair, attacker_pubkey, attacker_pubkey, 500,
         );
 
-        assert!(
-            matches!(status, Status::Failed(_)),
-            "Unauthorized fee withdrawal should fail"
-        );
+        assert_error(&status, QuipError::UnauthorizedSigner);
 
         println!("\n=== Test PASSED: WithdrawFees Unauthorized ===\n");
     }
@@ -1909,10 +1897,7 @@ mod quip_tests {
             &admin_keypair, admin_pubkey, recipient_pubkey, withdraw_amount,
         );
 
-        assert!(
-            matches!(status, Status::Failed(_)),
-            "Withdrawing more than accumulated should fail"
-        );
+        assert_error(&status, QuipError::InsufficientFunds);
 
         println!("\n=== Test PASSED: WithdrawFees Insufficient ===\n");
     }
@@ -2141,10 +2126,7 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        assert!(
-            matches!(processed_tx.status, Status::Failed(_)),
-            "BTC transfer with invalid signature should fail"
-        );
+        assert_error(&processed_tx.status, QuipError::InvalidWotsSignature);
 
         println!("\n=== Test PASSED: BTC Transfer Invalid Signature ===\n");
     }
@@ -2188,10 +2170,7 @@ mod quip_tests {
             transfer_amount, recipient_script_pubkey, fee_tx,
         );
 
-        assert!(
-            matches!(status, Status::Failed(_)),
-            "BTC transfer exceeding UTXO value should fail"
-        );
+        assert_error(&status, QuipError::InsufficientBtcBalance);
 
         println!("\n=== Test PASSED: BTC Transfer Insufficient BTC Balance ===\n");
     }
@@ -2272,10 +2251,7 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        assert!(
-            matches!(processed_tx.status, Status::Failed(_)),
-            "BTC transfer by non-owner should fail"
-        );
+        assert_error(&processed_tx.status, QuipError::UnauthorizedSigner);
 
         println!("\n=== Test PASSED: BTC Transfer Unauthorized ===\n");
     }
