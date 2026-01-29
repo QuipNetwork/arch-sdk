@@ -193,40 +193,21 @@ fn process_initialize_factory<'a>(
     // Verify factory account derivation and get bump
     let factory_bump = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
-    // Check if factory account needs to be created
-    if factory_info.data_len() == 0 {
-        // Create PDA account
-        let factory_seeds: &[&[u8]] = &[b"factory", &[factory_bump]];
-        crate::utils::create_pda_account(
-            payer_info,
-            factory_info,
-            QuipFactory::SPACE,
-            program_id,
-            &factory_utxo,
-            factory_seeds,
-        )?;
-    }
-
-    // Verify ownership
-    if factory_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-
-    // Check if factory is already initialized
-    let factory_data = factory_info.try_borrow_data()?;
-    if !factory_data.is_empty() {
-        // Try to deserialize to check is_initialized flag
-        if let Ok(existing_factory) = QuipFactory::try_from_slice(&factory_data) {
-            if existing_factory.is_initialized {
-                return Err(QuipError::FactoryAlreadyInitialized.into());
-            }
-        }
-    }
-    drop(factory_data);
+    // Create PDA account (will fail naturally if called a second time)
+    // This makes `is_initialized` implicit - account existence implies initialization since
+    // factories can only be created via initialize instruction, and creation + initialization are atomic.
+    let factory_seeds: &[&[u8]] = &[b"factory", &[factory_bump]];
+    crate::utils::create_pda_account(
+        payer_info,
+        factory_info,
+        QuipFactory::SPACE,
+        program_id,
+        &factory_utxo,
+        factory_seeds,
+    )?;
 
     // Create factory state
     let factory = QuipFactory {
-        is_initialized: true,
         admin,
         creation_fee,
         transfer_fee,
@@ -269,6 +250,11 @@ fn process_deposit_to_winternitz<'a>(
         return Err(QuipError::UnauthorizedSigner.into());
     }
 
+    // Verify factory ownership (must already exist)
+    if factory_info.owner != program_id {
+        return Err(QuipError::IncorrectProgramOwner.into());
+    }
+
     // Verify account derivations and get bumps
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
     let wallet_bump = crate::utils::verify_wallet_address(program_id, &to, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
@@ -289,10 +275,7 @@ fn process_deposit_to_winternitz<'a>(
         )?;
     }
 
-    // Verify ownership (factory must already exist, wallet was just created or exists)
-    if factory_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
+    // Verify wallet ownership (was just created or already exists)
     if wallet_info.owner != program_id {
         return Err(QuipError::IncorrectProgramOwner.into());
     }
@@ -302,11 +285,6 @@ fn process_deposit_to_winternitz<'a>(
     let mut factory = QuipFactory::try_from_slice(&factory_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
-
-    // Verify factory is initialized
-    if !factory.is_initialized {
-        return Err(QuipError::AccountNotInitialized.into());
-    }
 
     if is_new_wallet {
         // NEW WALLET: charge creation fee, initialize wallet state
@@ -428,11 +406,6 @@ fn process_transfer_with_winternitz<'a>(
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
 
-    // Verify factory is initialized
-    if !factory.is_initialized {
-        return Err(QuipError::AccountNotInitialized.into());
-    }
-
     let wallet_data = wallet_info.try_borrow_data()?;
     let mut wallet = QuipWallet::try_from_slice(&wallet_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
@@ -550,11 +523,6 @@ fn process_execute_with_winternitz<'a>(
     let mut factory = QuipFactory::try_from_slice(&factory_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
-
-    // Verify factory is initialized
-    if !factory.is_initialized {
-        return Err(QuipError::AccountNotInitialized.into());
-    }
 
     let wallet_data = wallet_info.try_borrow_data()?;
     let mut wallet = QuipWallet::try_from_slice(&wallet_data)
@@ -763,11 +731,6 @@ fn process_update_fees<'a>(
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
 
-    // Verify factory is initialized
-    if !factory.is_initialized {
-        return Err(QuipError::AccountNotInitialized.into());
-    }
-
     // Verify admin matches
     if pubkey_to_bytes(admin_info.key) != factory.admin {
         return Err(QuipError::UnauthorizedSigner.into());
@@ -825,11 +788,6 @@ fn process_withdraw_fees<'a>(
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
 
-    // Verify factory is initialized
-    if !factory.is_initialized {
-        return Err(QuipError::AccountNotInitialized.into());
-    }
-
     // Verify admin matches
     if pubkey_to_bytes(admin_info.key) != factory.admin {
         return Err(QuipError::UnauthorizedSigner.into());
@@ -886,11 +844,6 @@ fn process_transfer_ownership<'a>(
     let mut factory = QuipFactory::try_from_slice(&factory_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
-
-    // Verify factory is initialized
-    if !factory.is_initialized {
-        return Err(QuipError::AccountNotInitialized.into());
-    }
 
     // Verify admin matches
     if pubkey_to_bytes(admin_info.key) != factory.admin {
@@ -960,10 +913,6 @@ fn process_btc_transfer_with_winternitz<'a>(
     let mut factory = QuipFactory::try_from_slice(&factory_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
-
-    if !factory.is_initialized {
-        return Err(QuipError::AccountNotInitialized.into());
-    }
 
     let wallet_data = wallet_info.try_borrow_data()?;
     let mut wallet = QuipWallet::try_from_slice(&wallet_data)
