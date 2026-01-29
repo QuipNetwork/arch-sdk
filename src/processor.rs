@@ -190,11 +190,6 @@ fn process_initialize_factory<'a>(
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
 
-    // Verify writable
-    if !factory_info.is_writable {
-        return Err(QuipError::AccountNotWritable.into());
-    }
-
     // Verify factory account derivation and get bump
     let factory_bump = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
@@ -268,11 +263,6 @@ fn process_deposit_to_winternitz<'a>(
 
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
-
-    // Verify writable permissions
-    if !factory_info.is_writable || !wallet_info.is_writable {
-        return Err(QuipError::AccountNotWritable.into());
-    }
 
     // Verify payer is signer
     if !payer_info.is_signer {
@@ -420,9 +410,6 @@ fn process_transfer_with_winternitz<'a>(
     if wallet_info.owner != program_id {
         return Err(QuipError::IncorrectProgramOwner.into());
     }
-    if !factory_info.is_writable || !wallet_info.is_writable {
-        return Err(QuipError::AccountNotWritable.into());
-    }
 
     // Verify payer is signer
     if !payer_info.is_signer {
@@ -545,9 +532,6 @@ fn process_execute_with_winternitz<'a>(
     }
     if wallet_info.owner != program_id {
         return Err(QuipError::IncorrectProgramOwner.into());
-    }
-    if !factory_info.is_writable || !wallet_info.is_writable {
-        return Err(QuipError::AccountNotWritable.into());
     }
 
     // Verify payer is signer
@@ -760,12 +744,9 @@ fn process_update_fees<'a>(
     let factory_info = next_account_info(account_info_iter)?;
     let admin_info = next_account_info(account_info_iter)?;
 
-    // Verify account ownership and permissions
+    // Verify account ownership
     if factory_info.owner != program_id {
         return Err(QuipError::IncorrectProgramOwner.into());
-    }
-    if !factory_info.is_writable {
-        return Err(QuipError::AccountNotWritable.into());
     }
 
     // Verify factory account derivation
@@ -825,12 +806,9 @@ fn process_withdraw_fees<'a>(
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
 
-    // Verify account ownership and permissions
+    // Verify account ownership
     if factory_info.owner != program_id {
         return Err(QuipError::IncorrectProgramOwner.into());
-    }
-    if !factory_info.is_writable {
-        return Err(QuipError::AccountNotWritable.into());
     }
 
     // Verify factory account derivation
@@ -890,12 +868,9 @@ fn process_transfer_ownership<'a>(
     let factory_info = next_account_info(account_info_iter)?;
     let admin_info = next_account_info(account_info_iter)?;
 
-    // Verify account ownership and permissions
+    // Verify account ownership
     if factory_info.owner != program_id {
         return Err(QuipError::IncorrectProgramOwner.into());
-    }
-    if !factory_info.is_writable {
-        return Err(QuipError::AccountNotWritable.into());
     }
 
     // Verify factory account derivation
@@ -967,13 +942,6 @@ fn process_btc_transfer_with_winternitz<'a>(
     }
     if wallet_info.owner != program_id {
         return Err(QuipError::IncorrectProgramOwner.into());
-    }
-    // Both wallet and factory must be writable: wallet for state + UTXO update,
-    // factory for lamport fee collection. Both are program-owned PDAs, so
-    // set_transaction_to_sign can update their UTXOs. They are included in the
-    // BTC transaction to satisfy Arch's anchoring requirement.
-    if !factory_info.is_writable || !wallet_info.is_writable {
-        return Err(QuipError::AccountNotWritable.into());
     }
 
     // Verify owner is signer (required for WOTS+ authorization)
