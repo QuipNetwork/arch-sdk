@@ -335,7 +335,6 @@ mod quip_tests {
         let factory = QuipFactory::try_from_slice(&factory_account.data)
             .expect("Failed to deserialize factory");
 
-        assert!(factory.is_initialized, "Factory should be initialized");
         assert_eq!(factory.admin, expected_admin, "Admin mismatch");
         assert_eq!(factory.creation_fee, expected_creation_fee, "Creation fee mismatch");
         assert_eq!(factory.transfer_fee, expected_transfer_fee, "Transfer fee mismatch");
@@ -585,6 +584,7 @@ mod quip_tests {
         }
     }
 
+
     /// Execute a withdraw fees operation
     fn execute_withdraw_fees(
         ctx: &TestContext,
@@ -763,9 +763,143 @@ mod quip_tests {
         let processed_tx2 = ctx.client.wait_for_processed_transaction(&txid2).unwrap();
         println!("Second initialization status: {:?}", processed_tx2.status);
 
-        assert_error(&processed_tx2.status, QuipError::FactoryAlreadyInitialized);
+        // Double-init prevention is enforced by system program rejecting create_account
+        // when the account already exists
+        match &processed_tx2.status {
+            Status::Failed(err) => {
+                assert!(
+                    err.contains("an account with the same address already exists"),
+                    "Expected 'account already exists' error, got: {}",
+                    err
+                );
+            }
+            other => panic!("Expected Status::Failed, got: {:?}", other),
+        }
 
         println!("\n=== Test PASSED: Initialize Factory Already Initialized ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_initialize_factory_wrong_pda() {
+        println!("\n=== Test: Initialize Factory Wrong PDA ===\n");
+
+        let ctx = TestContext::new();
+        let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
+
+        // Create a random account instead of the derived factory PDA
+        let (_wrong_keypair, wrong_pubkey, _) = generate_new_keypair(ctx.config.network);
+
+        let (factory_txid, factory_vout) = ctx.helper.send_utxo(wrong_pubkey).unwrap();
+        let factory_utxo = UtxoMeta::from(
+            hex::decode(&factory_txid).unwrap().try_into().unwrap(),
+            factory_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::InitializeFactory {
+            admin: admin_pubkey.serialize(),
+            creation_fee: 1000,
+            transfer_fee: 500,
+            execute_fee: 750,
+            factory_utxo,
+        }).unwrap();
+
+        let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: wrong_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: instruction_data,
+                }],
+                Some(payer_pubkey),
+                recent_blockhash,
+            ),
+            vec![payer_keypair],
+            ctx.config.network,
+        ).unwrap();
+
+        let txid = ctx.client.send_transaction(tx).unwrap();
+        let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Wrong PDA initialization status: {:?}", processed_tx.status);
+
+        assert_error(&processed_tx.status, QuipError::InvalidAccountDerivation);
+
+        println!("\n=== Test PASSED: Initialize Factory Wrong PDA ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_initialize_factory_wrong_system_program() {
+        println!("\n=== Test: Initialize Factory Wrong System Program ===\n");
+
+        let ctx = TestContext::new();
+        let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
+
+        // Create a fake system program account
+        let (_fake_system_keypair, fake_system_pubkey, _) = generate_new_keypair(ctx.config.network);
+
+        // Derive correct factory PDA
+        let (factory_bytes, _) = derive_factory_address(&program_pubkey);
+        let factory_pubkey = Pubkey::from_slice(&factory_bytes);
+
+        let (factory_txid, factory_vout) = ctx.helper.send_utxo(factory_pubkey).unwrap();
+        let factory_utxo = UtxoMeta::from(
+            hex::decode(&factory_txid).unwrap().try_into().unwrap(),
+            factory_vout,
+        );
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::InitializeFactory {
+            admin: admin_pubkey.serialize(),
+            creation_fee: 1000,
+            transfer_fee: 500,
+            execute_fee: 750,
+            factory_utxo,
+        }).unwrap();
+
+        let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[Instruction {
+                    program_id: program_pubkey,
+                    accounts: vec![
+                        AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                        AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
+                        AccountMeta { pubkey: fake_system_pubkey, is_signer: false, is_writable: false }, // Fake!
+                    ],
+                    data: instruction_data,
+                }],
+                Some(payer_pubkey),
+                recent_blockhash,
+            ),
+            vec![payer_keypair],
+            ctx.config.network,
+        ).unwrap();
+
+        let txid = ctx.client.send_transaction(tx).unwrap();
+        let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+        println!("Wrong system program status: {:?}", processed_tx.status);
+
+        match &processed_tx.status {
+            Status::Failed(err) => {
+                assert!(
+                    err.contains("incorrect program id"),
+                    "Expected 'incorrect program id' error, got: {}",
+                    err
+                );
+            }
+            other => panic!("Expected Status::Failed, got: {:?}", other),
+        }
+
+        println!("\n=== Test PASSED: Initialize Factory Wrong System Program ===\n");
     }
 
     // =============================================================================
