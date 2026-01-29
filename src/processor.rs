@@ -84,9 +84,8 @@ pub fn process_instruction<'a>(
 
         QuipInstruction::DepositToWinternitz {
             vault_id,
-            to,
-            pq_to,
-            initial_deposit,
+            pq_owner,
+            deposit,
             wallet_utxo,
         } => {
             msg!("Instruction: DepositToWinternitz");
@@ -94,9 +93,8 @@ pub fn process_instruction<'a>(
                 program_id,
                 accounts,
                 vault_id,
-                to,
-                pq_to,
-                initial_deposit,
+                pq_owner,
+                deposit,
                 wallet_utxo,
             )
         }
@@ -230,23 +228,22 @@ fn process_deposit_to_winternitz<'a>(
     program_id: &Pubkey,
     accounts: &'a [AccountInfo<'a>],
     vault_id: [u8; 32],
-    to: [u8; 32],
-    pq_to: WinternitzPublicKey,
-    initial_deposit: u64,
+    pq_owner: WinternitzPublicKey,
+    deposit: u64,
     wallet_utxo: arch_program::utxo::UtxoMeta,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
     let factory_info = next_account_info(account_info_iter)?;
     let wallet_info = next_account_info(account_info_iter)?;
-    let _owner_info = next_account_info(account_info_iter)?;
-    let payer_info = next_account_info(account_info_iter)?;
+    // Owner pays for wallet creation and deposit
+    let owner_info = next_account_info(account_info_iter)?;
     let system_program_info = next_account_info(account_info_iter)?;
 
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
 
-    // Verify payer is signer
-    if !payer_info.is_signer {
+    // Verify owner is signer
+    if !owner_info.is_signer {
         return Err(QuipError::UnauthorizedSigner.into());
     }
 
@@ -255,30 +252,24 @@ fn process_deposit_to_winternitz<'a>(
         return Err(QuipError::IncorrectProgramOwner.into());
     }
 
+    // Derive owner bytes from signer
+    let owner = pubkey_to_bytes(owner_info.key);
+
     // Verify account derivations and get bumps
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
-    let wallet_bump = crate::utils::verify_wallet_address(program_id, &to, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
+    let wallet_bump = crate::utils::verify_wallet_address(program_id, &owner, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
-    // Check if this is a new wallet creation or a topup
-    let is_new_wallet = wallet_info.data_len() == 0;
+    // Create wallet PDA account (will fail if wallet already exists via system program CPI)
+    let wallet_seeds: &[&[u8]] = &[b"wallet", owner.as_ref(), vault_id.as_ref(), &[wallet_bump]];
+    crate::utils::create_pda_account(
+        owner_info,
+        wallet_info,
+        QuipWallet::SPACE,
+        program_id,
+        &wallet_utxo,
+        wallet_seeds,
+    )?;
 
-    // Create wallet PDA account if it doesn't exist
-    if is_new_wallet {
-        let wallet_seeds: &[&[u8]] = &[b"wallet", to.as_ref(), vault_id.as_ref(), &[wallet_bump]];
-        crate::utils::create_pda_account(
-            payer_info,
-            wallet_info,
-            QuipWallet::SPACE,
-            program_id,
-            &wallet_utxo,
-            wallet_seeds,
-        )?;
-    }
-
-    // Verify wallet ownership (was just created or already exists)
-    if wallet_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
 
     // Load factory
     let factory_data = factory_info.try_borrow_data()?;
@@ -286,79 +277,52 @@ fn process_deposit_to_winternitz<'a>(
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(factory_data);
 
-    if is_new_wallet {
-        // NEW WALLET: charge creation fee, initialize wallet state
+    // Transfer creation fee from owner to factory
+    crate::utils::transfer_value_from_signer(owner_info, factory_info, factory.creation_fee)?;
 
-        // Transfer creation fee from payer (signer) to factory
-        crate::utils::transfer_value_from_signer(payer_info, factory_info, factory.creation_fee)?;
-
-        // Transfer initial deposit from payer (signer) to wallet
-        if initial_deposit > 0 {
-            crate::utils::transfer_value_from_signer(payer_info, wallet_info, initial_deposit)?;
-        }
-
-        // Update factory counters
-        factory.accumulated_fees = factory
-            .accumulated_fees
-            .checked_add(factory.creation_fee)
-            .ok_or(ProgramError::ArithmeticOverflow)?;
-        factory.total_wallets = factory
-            .total_wallets
-            .checked_add(1)
-            .ok_or(ProgramError::ArithmeticOverflow)?;
-
-        // Create wallet state
-        let current_block = get_bitcoin_block_height() as i64;
-        let wallet = QuipWallet {
-            is_initialized: true,
-            factory: pubkey_to_bytes(factory_info.key),
-            owner: to,
-            pq_owner: pq_to,
-            created_at: current_block,
-            last_activity: current_block,
-            transaction_count: 0,
-            bump: wallet_bump,
-        };
-
-        // Serialize wallet state
-        let mut wallet_data = wallet_info.try_borrow_mut_data()?;
-        wallet.serialize(&mut &mut wallet_data[..])
-            .map_err(|_| ProgramError::InvalidAccountData)?;
-
-        // Serialize factory state
-        let mut factory_data = factory_info.try_borrow_mut_data()?;
-        factory.serialize(&mut &mut factory_data[..])
-            .map_err(|_| ProgramError::InvalidAccountData)?;
-
-        msg!(
-            "Wallet created with vault_id: {}, deposit: {}",
-            hex::encode(vault_id),
-            initial_deposit
-        );
-    } else {
-        // TOPUP: just transfer deposit, no creation fee, no state changes
-
-        // Verify wallet is initialized
-        let wallet_data = wallet_info.try_borrow_data()?;
-        let wallet = QuipWallet::try_from_slice(&wallet_data)
-            .map_err(|_| ProgramError::InvalidAccountData)?;
-        drop(wallet_data);
-
-        if !wallet.is_initialized {
-            return Err(QuipError::AccountNotInitialized.into());
-        }
-
-        // Transfer deposit from payer (signer) to wallet
-        if initial_deposit > 0 {
-            crate::utils::transfer_value_from_signer(payer_info, wallet_info, initial_deposit)?;
-        }
-
-        msg!(
-            "Wallet topped up with vault_id: {}, deposit: {}",
-            hex::encode(vault_id),
-            initial_deposit
-        );
+    // Transfer deposit from owner to wallet
+    if deposit > 0 {
+        crate::utils::transfer_value_from_signer(owner_info, wallet_info, deposit)?;
     }
+
+    // Update factory counters
+    factory.accumulated_fees = factory
+        .accumulated_fees
+        .checked_add(factory.creation_fee)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    factory.total_wallets = factory
+        .total_wallets
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+
+    // Create wallet state
+    let current_block = get_bitcoin_block_height() as i64;
+    let wallet = QuipWallet {
+        is_initialized: true,
+        factory: pubkey_to_bytes(factory_info.key),
+        owner,
+        pq_owner,
+        created_at: current_block,
+        last_activity: current_block,
+        transaction_count: 0,
+        bump: wallet_bump,
+    };
+
+    // Serialize wallet state
+    let mut wallet_data = wallet_info.try_borrow_mut_data()?;
+    wallet.serialize(&mut &mut wallet_data[..])
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+
+    // Serialize factory state
+    let mut factory_data = factory_info.try_borrow_mut_data()?;
+    factory.serialize(&mut &mut factory_data[..])
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+
+    msg!(
+        "Wallet created with vault_id: {}, deposit: {}",
+        hex::encode(vault_id),
+        deposit
+    );
 
     Ok(())
 }

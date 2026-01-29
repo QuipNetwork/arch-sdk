@@ -37,19 +37,17 @@ pub enum QuipInstruction {
         factory_utxo: UtxoMeta,
     },
 
-    /// Create a new wallet with WOTS+ key and initial deposit
+    /// Create a new wallet with WOTS+ key and optional deposit
     ///
     /// Accounts:
     /// 0. `[writable]` Factory
     /// 1. `[writable]` Wallet account (to be created)
-    /// 2. `[]` Owner
-    /// 3. `[signer, writable]` Payer
-    /// 4. `[]` System program
+    /// 2. `[signer, writable]` Owner (pays for creation and deposit)
+    /// 3. `[]` System program
     DepositToWinternitz {
         vault_id: [u8; 32],
-        to: [u8; 32],
-        pq_to: WinternitzPublicKey,
-        initial_deposit: u64,
+        pq_owner: WinternitzPublicKey,
+        deposit: u64,
         /// UTXO for anchoring wallet account creation
         wallet_utxo: UtxoMeta,
     },
