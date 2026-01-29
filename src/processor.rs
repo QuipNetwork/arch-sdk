@@ -699,41 +699,34 @@ fn process_change_pq_owner<'a>(
     let account_info_iter = &mut accounts.iter();
     let _factory_info = next_account_info(account_info_iter)?;
     let wallet_info = next_account_info(account_info_iter)?;
-    let payer_info = next_account_info(account_info_iter)?;
+    // Owner account must sign to authorize the PQ key change (owner also pays tx fees)
+    let owner_info = next_account_info(account_info_iter)?;
 
-    // Verify account ownership and permissions
+    // Verify account ownership
     if wallet_info.owner != program_id {
         return Err(QuipError::IncorrectProgramOwner.into());
     }
-    if !wallet_info.is_writable {
-        return Err(QuipError::AccountNotWritable.into());
-    }
 
-    // Verify payer is signer
-    if !payer_info.is_signer {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
-
-    let payer_bytes = pubkey_to_bytes(payer_info.key);
-
-    // Verify account derivations
-    let _ = crate::utils::verify_wallet_address(program_id, &payer_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
-
-    // Load states
+    // Load and validate wallet state
     let wallet_data = wallet_info.try_borrow_data()?;
     let mut wallet = QuipWallet::try_from_slice(&wallet_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(wallet_data);
 
-    // Verify wallet is initialized
     if !wallet.is_initialized {
         return Err(QuipError::AccountNotInitialized.into());
     }
 
-    // Verify payer is wallet owner
-    if pubkey_to_bytes(payer_info.key) != wallet.owner {
+    // Verify owner has signed and matches wallet owner
+    if !owner_info.is_signer {
         return Err(QuipError::UnauthorizedSigner.into());
     }
+    if pubkey_to_bytes(owner_info.key) != wallet.owner {
+        return Err(QuipError::UnauthorizedSigner.into());
+    }
+
+    // Verify wallet address derivation
+    let _ = crate::utils::verify_wallet_address(program_id, &wallet.owner, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
     // Verify signature
     let message = crate::utils::create_change_owner_message(&wallet.pq_owner, &pq_next);
