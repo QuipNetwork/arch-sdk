@@ -694,15 +694,6 @@ fn process_withdraw_fees<'a>(
     let factory_info = next_account_info(account_info_iter)?;
     let admin_info = next_account_info(account_info_iter)?;
     let recipient_info = next_account_info(account_info_iter)?;
-    let system_program_info = next_account_info(account_info_iter)?;
-
-    // Verify system program
-    crate::utils::verify_system_program(system_program_info)?;
-
-    // Verify account ownership
-    if factory_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
 
     // Verify factory account derivation
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
@@ -755,11 +746,6 @@ fn process_transfer_ownership<'a>(
     let account_info_iter = &mut accounts.iter();
     let factory_info = next_account_info(account_info_iter)?;
     let admin_info = next_account_info(account_info_iter)?;
-
-    // Verify account ownership
-    if factory_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
 
     // Verify factory account derivation
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
