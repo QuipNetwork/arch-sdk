@@ -429,7 +429,6 @@ mod quip_tests {
                             AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
                             AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
                             AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
-                            AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
                         ],
                         data: instruction_data,
                     },
@@ -1622,7 +1621,6 @@ mod quip_tests {
                             AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
                             AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
                             AccountMeta { pubkey: owner_pubkey, is_signer: true, is_writable: true },
-                            AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
                         ],
                         data: instruction_data,
                     },
@@ -1971,7 +1969,7 @@ mod quip_tests {
             &payer_keypair, payer_pubkey, vault_id, &pq_key, &pq_next, &private_key, transfer_amount,
         );
 
-        assert_error(&status, QuipError::InsufficientFunds);
+        assert_error(&status, QuipError::InsufficientWalletBalance);
 
         println!("\n=== Test PASSED: TransferWithWinternitz Insufficient Balance ===\n");
     }
@@ -1979,8 +1977,8 @@ mod quip_tests {
     #[test]
     #[serial]
     #[ignore]
-    fn test_transfer_with_winternitz_unauthorized() {
-        println!("\n=== Test: TransferWithWinternitz Unauthorized ===\n");
+    fn test_transfer_with_winternitz_wrong_wallet_pda() {
+        println!("\n=== Test: TransferWithWinternitz Wrong Wallet PDA ===\n");
 
         let ctx = TestContext::new();
         let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
@@ -2006,6 +2004,8 @@ mod quip_tests {
         );
 
         // Attacker attempts to transfer (with valid signature but wrong signer)
+        // This fails at verify_wallet_address because the wallet PDA was derived
+        // from the original owner, not the attacker
         let transfer_amount: u64 = 1000;
         let recipient_bytes = recipient_pubkey.serialize();
         let message = create_transfer_message(&pq_key, &pq_next, &recipient_bytes, transfer_amount);
@@ -2031,8 +2031,7 @@ mod quip_tests {
                             AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
                             AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
                             AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
-                            AccountMeta { pubkey: attacker_pubkey, is_signer: true, is_writable: true }, // Attacker as payer
-                            AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                            AccountMeta { pubkey: attacker_pubkey, is_signer: true, is_writable: true }, // Attacker as owner
                         ],
                         data: instruction_data,
                     },
@@ -2047,9 +2046,304 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
+        // After refactor: fails at verify_wallet_address because wallet PDA
+        // was derived from original owner, not attacker
+        assert_error(&processed_tx.status, QuipError::InvalidAccountDerivation);
+
+        println!("\n=== Test PASSED: TransferWithWinternitz Wrong Wallet PDA ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_transfer_with_winternitz_owner_not_signer() {
+        println!("\n=== Test: TransferWithWinternitz Owner Not Signer ===\n");
+
+        let ctx = TestContext::new();
+        let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
+        let (other_keypair, other_pubkey, _) = generate_new_keypair(ctx.config.network);
+        let (_recipient_keypair, recipient_pubkey, _) = generate_new_keypair(ctx.config.network);
+
+        ctx.client.create_and_fund_account_with_faucet(&other_keypair).unwrap();
+
+        let factory_pubkey = initialize_factory(
+            &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
+            1000, 500, 750,
+        );
+
+        let vault_id = [80u8; 32];
+        let (pq_key, private_key) = generate_wots_keypair(80);
+        let (pq_next, _) = generate_wots_keypair(81);
+
+        let wallet_pubkey = create_wallet(
+            &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
+            vault_id, &pq_key, 10000,
+        );
+
+        // Create valid signature
+        let transfer_amount: u64 = 1000;
+        let recipient_bytes = recipient_pubkey.serialize();
+        let message = create_transfer_message(&pq_key, &pq_next, &recipient_bytes, transfer_amount);
+        let signature_data = sign_message(&private_key, &message);
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::TransferWithWinternitz {
+            vault_id,
+            pq_next: pq_next.clone(),
+            amount: transfer_amount,
+            signature: WinternitzSignature { signature_data },
+        }).unwrap();
+
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
+
+        // Pass owner account without is_signer flag (other_keypair signs the tx, but owner is passed as non-signer)
+        let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[
+                    compute_budget_ix,
+                    Instruction {
+                        program_id: program_pubkey,
+                        accounts: vec![
+                            AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: payer_pubkey, is_signer: false, is_writable: true }, // Owner NOT a signer
+                        ],
+                        data: instruction_data,
+                    },
+                ],
+                Some(other_pubkey),
+                recent_blockhash,
+            ),
+            vec![other_keypair],
+            ctx.config.network,
+        ).unwrap();
+
+        let txid = ctx.client.send_transaction(tx).unwrap();
+        let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+
         assert_error(&processed_tx.status, QuipError::UnauthorizedSigner);
 
-        println!("\n=== Test PASSED: TransferWithWinternitz Unauthorized ===\n");
+        println!("\n=== Test PASSED: TransferWithWinternitz Owner Not Signer ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_transfer_with_winternitz_uninitialized_factory() {
+        println!("\n=== Test: TransferWithWinternitz Uninitialized Factory ===\n");
+
+        let ctx = TestContext::new();
+        let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+        let (_recipient_keypair, recipient_pubkey, _) = generate_new_keypair(ctx.config.network);
+
+        // Derive factory address but don't initialize it
+        let (factory_bytes, _) = derive_factory_address(&program_pubkey);
+        let factory_pubkey = Pubkey::from_slice(&factory_bytes);
+
+        // Derive a would-be wallet address
+        let vault_id = [81u8; 32];
+        let owner_bytes = payer_pubkey.serialize();
+        let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
+        let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
+
+        let (pq_key, private_key) = generate_wots_keypair(81);
+        let (pq_next, _) = generate_wots_keypair(82);
+
+        // Create valid signature
+        let transfer_amount: u64 = 1000;
+        let recipient_bytes = recipient_pubkey.serialize();
+        let message = create_transfer_message(&pq_key, &pq_next, &recipient_bytes, transfer_amount);
+        let signature_data = sign_message(&private_key, &message);
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::TransferWithWinternitz {
+            vault_id,
+            pq_next: pq_next.clone(),
+            amount: transfer_amount,
+            signature: WinternitzSignature { signature_data },
+        }).unwrap();
+
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
+
+        let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[
+                    compute_budget_ix,
+                    Instruction {
+                        program_id: program_pubkey,
+                        accounts: vec![
+                            AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
+                        ],
+                        data: instruction_data,
+                    },
+                ],
+                Some(payer_pubkey),
+                recent_blockhash,
+            ),
+            vec![payer_keypair],
+            ctx.config.network,
+        ).unwrap();
+
+        let txid = ctx.client.send_transaction(tx).unwrap();
+        let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+
+        // Factory not initialized = not owned by program
+        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+
+        println!("\n=== Test PASSED: TransferWithWinternitz Uninitialized Factory ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_transfer_with_winternitz_uninitialized_wallet() {
+        println!("\n=== Test: TransferWithWinternitz Uninitialized Wallet ===\n");
+
+        let ctx = TestContext::new();
+        let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
+        let (_recipient_keypair, recipient_pubkey, _) = generate_new_keypair(ctx.config.network);
+
+        let factory_pubkey = initialize_factory(
+            &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
+            1000, 500, 750,
+        );
+
+        // Derive wallet address but don't create it
+        let vault_id = [82u8; 32];
+        let owner_bytes = payer_pubkey.serialize();
+        let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
+        let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
+
+        let (pq_key, private_key) = generate_wots_keypair(82);
+        let (pq_next, _) = generate_wots_keypair(83);
+
+        // Create valid signature
+        let transfer_amount: u64 = 1000;
+        let recipient_bytes = recipient_pubkey.serialize();
+        let message = create_transfer_message(&pq_key, &pq_next, &recipient_bytes, transfer_amount);
+        let signature_data = sign_message(&private_key, &message);
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::TransferWithWinternitz {
+            vault_id,
+            pq_next: pq_next.clone(),
+            amount: transfer_amount,
+            signature: WinternitzSignature { signature_data },
+        }).unwrap();
+
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
+
+        let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[
+                    compute_budget_ix,
+                    Instruction {
+                        program_id: program_pubkey,
+                        accounts: vec![
+                            AccountMeta { pubkey: factory_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
+                        ],
+                        data: instruction_data,
+                    },
+                ],
+                Some(payer_pubkey),
+                recent_blockhash,
+            ),
+            vec![payer_keypair],
+            ctx.config.network,
+        ).unwrap();
+
+        let txid = ctx.client.send_transaction(tx).unwrap();
+        let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+
+        // Wallet not created = not owned by program
+        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+
+        println!("\n=== Test PASSED: TransferWithWinternitz Uninitialized Wallet ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_transfer_with_winternitz_wrong_factory_pda() {
+        println!("\n=== Test: TransferWithWinternitz Wrong Factory PDA ===\n");
+
+        let ctx = TestContext::new();
+        let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
+        let (_recipient_keypair, recipient_pubkey, _) = generate_new_keypair(ctx.config.network);
+        let (random_keypair, random_pubkey, _) = generate_new_keypair(ctx.config.network);
+
+        ctx.client.create_and_fund_account_with_faucet(&random_keypair).unwrap();
+
+        let factory_pubkey = initialize_factory(
+            &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
+            1000, 500, 750,
+        );
+
+        let vault_id = [83u8; 32];
+        let (pq_key, private_key) = generate_wots_keypair(83);
+        let (pq_next, _) = generate_wots_keypair(84);
+
+        let wallet_pubkey = create_wallet(
+            &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
+            vault_id, &pq_key, 10000,
+        );
+
+        // Create valid signature
+        let transfer_amount: u64 = 1000;
+        let recipient_bytes = recipient_pubkey.serialize();
+        let message = create_transfer_message(&pq_key, &pq_next, &recipient_bytes, transfer_amount);
+        let signature_data = sign_message(&private_key, &message);
+
+        let instruction_data = borsh::to_vec(&QuipInstruction::TransferWithWinternitz {
+            vault_id,
+            pq_next: pq_next.clone(),
+            amount: transfer_amount,
+            signature: WinternitzSignature { signature_data },
+        }).unwrap();
+
+        let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
+
+        // Pass random account instead of factory
+        let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+        let tx = build_and_sign_transaction(
+            ArchMessage::new(
+                &[
+                    compute_budget_ix,
+                    Instruction {
+                        program_id: program_pubkey,
+                        accounts: vec![
+                            AccountMeta { pubkey: random_pubkey, is_signer: false, is_writable: true }, // Wrong factory
+                            AccountMeta { pubkey: wallet_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: recipient_pubkey, is_signer: false, is_writable: true },
+                            AccountMeta { pubkey: payer_pubkey, is_signer: true, is_writable: true },
+                        ],
+                        data: instruction_data,
+                    },
+                ],
+                Some(payer_pubkey),
+                recent_blockhash,
+            ),
+            vec![payer_keypair],
+            ctx.config.network,
+        ).unwrap();
+
+        let txid = ctx.client.send_transaction(tx).unwrap();
+        let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+
+        // Random account is not owned by program
+        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+
+        println!("\n=== Test PASSED: TransferWithWinternitz Wrong Factory PDA ===\n");
     }
 
     // =============================================================================
