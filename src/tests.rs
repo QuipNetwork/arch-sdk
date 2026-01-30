@@ -386,11 +386,14 @@ mod quip_tests {
         let wallet = QuipWallet::try_from_slice(&wallet_account.data)
             .expect("Failed to deserialize wallet");
 
-        assert!(wallet.is_initialized, "Wallet should be initialized");
+        assert_eq!(wallet.version, 1, "Version mismatch");
         assert_eq!(wallet.owner, expected_owner, "Owner mismatch");
         assert_eq!(wallet.pq_owner.public_seed, expected_pq_owner.public_seed, "PQ public_seed mismatch");
         assert_eq!(wallet.pq_owner.public_key_hash, expected_pq_owner.public_key_hash, "PQ public_key_hash mismatch");
+        assert!(wallet.created_at > 0, "created_at should be set");
+        assert!(wallet.last_activity >= wallet.created_at, "last_activity should be >= created_at");
         assert_eq!(wallet.transaction_count, expected_transaction_count, "Transaction count mismatch");
+        // bump intentionally not checked (PDA implementation detail)
     }
 
     /// Capture balances for multiple accounts
