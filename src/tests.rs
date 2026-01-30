@@ -82,7 +82,8 @@ mod quip_tests {
         arch_program::hashing_functions::keccak256(data).0
     }
 
-    /// Generate a WOTS+ keypair with deterministic seed based on index
+    /// Generate a WOTS+ keypair with deterministic seed based on index.
+    /// The index is used as a test seed to create different keypairs for different tests.
     fn generate_wots_keypair(index: u64) -> (WinternitzPublicKey, [u8; 32]) {
         let winternitz = WOTSPlus::new(keccak256_hash);
 
@@ -101,6 +102,30 @@ mod quip_tests {
         };
 
         (wots_pubkey, private_key)
+    }
+
+    /// Derive a WOTS+ public key from a private key at a specific index.
+    /// This allows generating multiple public keys from the same private key,
+    /// which is the correct WOTS+ usage pattern (rotate public keys, not private keys).
+    fn derive_wots_pubkey_at_index(
+        private_key: &[u8; 32],
+        index: u64,
+    ) -> WinternitzPublicKey {
+        let winternitz = WOTSPlus::new(keccak256_hash);
+
+        // Derive a unique public_seed based on private_key and index
+        // Hash the private_key with the index to get a deterministic public_seed
+        let mut seed_input = Vec::with_capacity(40);
+        seed_input.extend_from_slice(private_key);
+        seed_input.extend_from_slice(&index.to_le_bytes());
+        let public_seed = keccak256_hash(&seed_input);
+
+        let public_key = winternitz.get_public_key_with_public_seed(private_key, &public_seed);
+
+        WinternitzPublicKey {
+            public_seed: public_key.public_seed,
+            public_key_hash: public_key.public_key_hash,
+        }
     }
 
     /// Sign a message using WOTS+ private key
@@ -1512,7 +1537,7 @@ mod quip_tests {
         let vault_id = [10u8; 32];
         let initial_deposit: u64 = 10000;
         let (pq_key, private_key) = generate_wots_keypair(1);
-        let (pq_next, _) = generate_wots_keypair(2);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &owner_keypair, owner_pubkey,
@@ -1591,8 +1616,8 @@ mod quip_tests {
 
         // Create wallet
         let vault_id = [12u8; 32];
-        let (pq_key, _) = generate_wots_keypair(5);
-        let (pq_next, _) = generate_wots_keypair(6);
+        let (pq_key, private_key) = generate_wots_keypair(5);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &owner_keypair, owner_pubkey,
@@ -1668,7 +1693,7 @@ mod quip_tests {
         // Create wallet
         let vault_id = [20u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(10);
-        let (pq_next, _) = generate_wots_keypair(11);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &owner_keypair, owner_pubkey,
@@ -1957,7 +1982,7 @@ mod quip_tests {
         // Create wallet with very small deposit
         let vault_id = [7u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(7);
-        let (pq_next, _) = generate_wots_keypair(8);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
         let initial_deposit: u64 = 100; // Very small deposit
 
         let wallet_pubkey = create_wallet(
@@ -1999,7 +2024,7 @@ mod quip_tests {
         // Create wallet owned by payer
         let vault_id = [8u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(8);
-        let (pq_next, _) = generate_wots_keypair(9);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -2077,7 +2102,7 @@ mod quip_tests {
 
         let vault_id = [80u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(80);
-        let (pq_next, _) = generate_wots_keypair(81);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -2152,7 +2177,7 @@ mod quip_tests {
         let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
 
         let (pq_key, private_key) = generate_wots_keypair(81);
-        let (pq_next, _) = generate_wots_keypair(82);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         // Create valid signature
         let transfer_amount: u64 = 1000;
@@ -2224,7 +2249,7 @@ mod quip_tests {
         let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
 
         let (pq_key, private_key) = generate_wots_keypair(82);
-        let (pq_next, _) = generate_wots_keypair(83);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         // Create valid signature
         let transfer_amount: u64 = 1000;
@@ -2294,7 +2319,7 @@ mod quip_tests {
 
         let vault_id = [83u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(83);
-        let (pq_next, _) = generate_wots_keypair(84);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -2369,8 +2394,8 @@ mod quip_tests {
         );
 
         let vault_id = [9u8; 32];
-        let (pq_key, _) = generate_wots_keypair(9);
-        let (pq_next, _) = generate_wots_keypair(10);
+        let (pq_key, private_key) = generate_wots_keypair(9);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -2437,7 +2462,7 @@ mod quip_tests {
 
         let vault_id = [10u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(10);
-        let (pq_next, _) = generate_wots_keypair(11);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -2501,7 +2526,7 @@ mod quip_tests {
         let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
 
         let (pq_key, private_key) = generate_wots_keypair(11);
-        let (pq_next, _) = generate_wots_keypair(12);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let message = create_change_owner_message(&pq_key, &pq_next);
         let signature_data = sign_message(&private_key, &message);
@@ -2562,7 +2587,7 @@ mod quip_tests {
         // Create wallet with one vault_id
         let vault_id = [12u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(12);
-        let (pq_next, _) = generate_wots_keypair(13);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -2632,7 +2657,7 @@ mod quip_tests {
 
         let vault_id = [13u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(13);
-        let (pq_next, _) = generate_wots_keypair(14);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -2845,7 +2870,7 @@ mod quip_tests {
         let vault_id = [20u8; 32];
         let initial_deposit: u64 = 10000;
         let (pq_key, private_key) = generate_wots_keypair(30);
-        let (pq_next, _) = generate_wots_keypair(31);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -2924,7 +2949,7 @@ mod quip_tests {
 
         let vault_id = [21u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(40);
-        let (pq_next, _) = generate_wots_keypair(41);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -2992,8 +3017,8 @@ mod quip_tests {
         );
 
         let vault_id = [22u8; 32];
-        let (pq_key, _) = generate_wots_keypair(50);
-        let (pq_next, _) = generate_wots_keypair(51);
+        let (pq_key, private_key) = generate_wots_keypair(50);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -3067,7 +3092,7 @@ mod quip_tests {
 
         let vault_id = [23u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(60);
-        let (pq_next, _) = generate_wots_keypair(61);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -3115,7 +3140,7 @@ mod quip_tests {
         // Create wallet owned by payer
         let vault_id = [24u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(70);
-        let (pq_next, _) = generate_wots_keypair(71);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -3280,7 +3305,7 @@ mod quip_tests {
         let vault_id = [42u8; 32];
         let initial_deposit: u64 = 10_000;
         let (pq_key, private_key) = generate_wots_keypair(100);
-        let (pq_next, _) = generate_wots_keypair(101);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -3376,7 +3401,7 @@ mod quip_tests {
         // Create wallet
         let vault_id = [43u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(200);
-        let (pq_next, _) = generate_wots_keypair(201);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -3463,7 +3488,7 @@ mod quip_tests {
         let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
 
         let (pq_key, private_key) = generate_wots_keypair(300);
-        let (pq_next, _) = generate_wots_keypair(301);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         // Build signature
         let target_bytes = system_program::SYSTEM_PROGRAM_ID.serialize();
@@ -3543,7 +3568,7 @@ mod quip_tests {
         let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
 
         let (pq_key, private_key) = generate_wots_keypair(400);
-        let (pq_next, _) = generate_wots_keypair(401);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         // Build signature
         let target_bytes = system_program::SYSTEM_PROGRAM_ID.serialize();
@@ -3619,7 +3644,7 @@ mod quip_tests {
         // Create wallet
         let vault_id = [46u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(500);
-        let (pq_next, _) = generate_wots_keypair(501);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -3704,7 +3729,7 @@ mod quip_tests {
         // Create wallet with vault_id_1
         let vault_id_1 = [47u8; 32];
         let (pq_key, private_key) = generate_wots_keypair(600);
-        let (pq_next, _) = generate_wots_keypair(601);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
@@ -3962,7 +3987,7 @@ mod quip_tests {
         let vault_id = [99u8; 32];
         let initial_deposit: u64 = 10_000;
         let (pq_key, private_key) = generate_wots_keypair(700);
-        let (pq_next, _) = generate_wots_keypair(701);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
         let wallet_pubkey = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
