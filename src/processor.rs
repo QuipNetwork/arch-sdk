@@ -589,36 +589,27 @@ fn process_change_pq_owner<'a>(
     signature: WinternitzSignature,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
-    let _factory_info = next_account_info(account_info_iter)?;
     let wallet_info = next_account_info(account_info_iter)?;
-    // Owner account must sign to authorize the PQ key change (owner also pays tx fees)
     let owner_info = next_account_info(account_info_iter)?;
+
+    // Verify owner is signer
+    if !owner_info.is_signer {
+        return Err(QuipError::UnauthorizedSigner.into());
+    }
 
     // Verify account ownership
     if wallet_info.owner != program_id {
         return Err(QuipError::IncorrectProgramOwner.into());
     }
 
-    // Load and validate wallet state
+    // Verify wallet address derivation (also validates owner matches wallet)
+    let _ = crate::utils::verify_wallet_address(program_id, &pubkey_to_bytes(owner_info.key), &vault_id, &pubkey_to_bytes(wallet_info.key))?;
+
+    // Load wallet state
     let wallet_data = wallet_info.try_borrow_data()?;
     let mut wallet = QuipWallet::try_from_slice(&wallet_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(wallet_data);
-
-    if !wallet.is_initialized {
-        return Err(QuipError::AccountNotInitialized.into());
-    }
-
-    // Verify owner has signed and matches wallet owner
-    if !owner_info.is_signer {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
-    if pubkey_to_bytes(owner_info.key) != wallet.owner {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
-
-    // Verify wallet address derivation
-    let _ = crate::utils::verify_wallet_address(program_id, &wallet.owner, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
     // Verify signature
     let message = crate::utils::create_change_owner_message(&wallet.pq_owner, &pq_next);
