@@ -73,9 +73,8 @@ pub enum QuipInstruction {
     /// 0. `[writable]` Factory
     /// 1. `[writable]` Wallet
     /// 2. `[]` Target program
-    /// 3. `[signer, writable]` Payer (must be wallet owner)
-    /// 4. `[]` System program
-    /// 5+ `[]` Remaining accounts for CPI
+    /// 3. `[signer, writable]` Owner (must be wallet owner)
+    /// 4+ `[]` Remaining accounts for CPI
     ExecuteWithWinternitz {
         pq_next: WinternitzPublicKey,
         vault_id: [u8; 32],
