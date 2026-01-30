@@ -58,8 +58,7 @@ pub enum QuipInstruction {
     /// 0. `[writable]` Factory
     /// 1. `[writable]` Wallet
     /// 2. `[writable]` Recipient
-    /// 3. `[signer, writable]` Payer (must be wallet owner)
-    /// 4. `[]` System program
+    /// 3. `[signer, writable]` Owner (must be wallet owner)
     TransferWithWinternitz {
         vault_id: [u8; 32],
         pq_next: WinternitzPublicKey,

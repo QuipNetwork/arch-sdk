@@ -339,13 +339,14 @@ fn process_transfer_with_winternitz<'a>(
     let factory_info = next_account_info(account_info_iter)?;
     let wallet_info = next_account_info(account_info_iter)?;
     let recipient_info = next_account_info(account_info_iter)?;
-    let payer_info = next_account_info(account_info_iter)?;
-    let system_program_info = next_account_info(account_info_iter)?;
+    let owner_info = next_account_info(account_info_iter)?;
 
-    // Verify system program
-    crate::utils::verify_system_program(system_program_info)?;
+    // Verify owner is signer
+    if !owner_info.is_signer {
+        return Err(QuipError::UnauthorizedSigner.into());
+    }
 
-    // Verify account ownership and permissions
+    // Verify account ownership
     if factory_info.owner != program_id {
         return Err(QuipError::IncorrectProgramOwner.into());
     }
@@ -353,16 +354,11 @@ fn process_transfer_with_winternitz<'a>(
         return Err(QuipError::IncorrectProgramOwner.into());
     }
 
-    // Verify payer is signer
-    if !payer_info.is_signer {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
-
-    let payer_bytes = pubkey_to_bytes(payer_info.key);
+    let owner = pubkey_to_bytes(owner_info.key);
 
     // Verify account derivations
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
-    let _ = crate::utils::verify_wallet_address(program_id, &payer_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
+    let _ = crate::utils::verify_wallet_address(program_id, &owner, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
     // Load states
     let factory_data = factory_info.try_borrow_data()?;
@@ -374,16 +370,6 @@ fn process_transfer_with_winternitz<'a>(
     let mut wallet = QuipWallet::try_from_slice(&wallet_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(wallet_data);
-
-    // Verify wallet is initialized
-    if !wallet.is_initialized {
-        return Err(QuipError::AccountNotInitialized.into());
-    }
-
-    // Verify payer is wallet owner
-    if pubkey_to_bytes(payer_info.key) != wallet.owner {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
 
     // Pre-check wallet balance: fee + transfer amount
     let total_required = factory.transfer_fee
