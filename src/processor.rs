@@ -37,7 +37,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::error::QuipError;
 use crate::instruction::QuipInstruction;
-use crate::state::*;
+use crate::state::{VERSION, *};
 
 /// Program result type
 pub type ProgramResult = Result<(), ProgramError>;
@@ -298,8 +298,7 @@ fn process_deposit_to_winternitz<'a>(
     // Create wallet state
     let current_block = get_bitcoin_block_height() as i64;
     let wallet = QuipWallet {
-        is_initialized: true,
-        factory: pubkey_to_bytes(factory_info.key),
+        version: VERSION,
         owner,
         pq_owner,
         created_at: current_block,
@@ -849,10 +848,6 @@ fn process_btc_transfer_with_winternitz<'a>(
     let mut wallet = QuipWallet::try_from_slice(&wallet_data)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(wallet_data);
-
-    if !wallet.is_initialized {
-        return Err(QuipError::AccountNotInitialized.into());
-    }
 
     // Verify caller is wallet owner
     if owner_bytes != wallet.owner {

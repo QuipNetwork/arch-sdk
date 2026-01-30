@@ -82,15 +82,14 @@ impl QuipFactory {
 // Wallet Account
 // =============================================================================
 
+/// Current wallet state version for migration support
+pub const VERSION: u8 = 1;
+
 /// Per-user Quip wallet with post-quantum security
-// TODO: Remove is_initialized - account existence implies initialization since
-// wallets can only be created via deposit instruction, and creation + initialization are atomic
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug)]
 pub struct QuipWallet {
-    /// Whether this wallet is initialized
-    pub is_initialized: bool,
-    /// Factory that created this wallet
-    pub factory: [u8; 32],
+    /// Wallet state version for migration support
+    pub version: u8,
     /// Classical key owner
     pub owner: [u8; 32],
     /// Current WOTS+ public key (post-quantum owner)
@@ -106,15 +105,15 @@ pub struct QuipWallet {
 }
 
 impl QuipWallet {
-    pub const SPACE: usize = 1 + // is_initialized
-        32 + // factory
-        32 + // owner
-        64 + // pq_owner (WinternitzPublicKey)
-        8 + // created_at
-        8 + // last_activity
-        8 + // transaction_count
-        1; // bump
-    // = 154 bytes
+    pub const SPACE: usize =
+        32 +  // owner
+        64 +  // pq_owner (WinternitzPublicKey)
+        8 +   // created_at
+        8 +   // last_activity
+        8 +   // transaction_count
+        1 +   // bump
+        1;    // version
+    // = 122 bytes
 }
 
 // =============================================================================
