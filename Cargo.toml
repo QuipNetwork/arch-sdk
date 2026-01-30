@@ -35,3 +35,5 @@ serial_test = "3.1.1"
 tokio = { version = "1", features = ["full"] }
 bitcoincore-rpc = "0.19.0"
 titan-client = "0.1.50"
+apl-token = { version = "0.5.15", features = ["no-entrypoint"] }
+apl-associated-token-account = { version = "0.5.15", features = ["no-entrypoint"] }
