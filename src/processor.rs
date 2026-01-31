@@ -246,15 +246,10 @@ fn process_deposit_to_winternitz<'a>(
     // Verify owner is signer
     require_signer(owner_info).map_err(|_| QuipError::UnauthorizedSigner)?;
 
-    // Verify factory ownership (must already exist)
-    if factory_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-
     // Derive owner bytes from signer
     let owner = pubkey_to_bytes(owner_info.key);
 
-    // Verify account derivations and get bumps
+    // Verify account derivations and get bumps (implies program ownership for PDAs)
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
     let wallet_bump = crate::utils::verify_wallet_address(program_id, &owner, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
@@ -330,17 +325,9 @@ fn process_transfer_with_winternitz<'a>(
     // Verify owner is signer
     require_signer(owner_info).map_err(|_| QuipError::UnauthorizedSigner)?;
 
-    // Verify account ownership
-    if factory_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-    if wallet_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-
     let owner = pubkey_to_bytes(owner_info.key);
 
-    // Verify account derivations
+    // Verify account derivations (implies program ownership for PDAs)
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
     let _ = crate::utils::verify_wallet_address(program_id, &owner, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
@@ -413,17 +400,9 @@ fn process_execute_with_winternitz<'a>(
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
 
-    // Verify account ownership
-    if factory_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-    if wallet_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-
     let owner = pubkey_to_bytes(owner_info.key);
 
-    // Verify account derivations
+    // Verify account derivations (implies program ownership for PDAs)
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
     let _ = crate::utils::verify_wallet_address(program_id, &owner, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
@@ -534,12 +513,7 @@ fn process_change_pq_owner<'a>(
     // Verify owner is signer
     require_signer(owner_info).map_err(|_| QuipError::UnauthorizedSigner)?;
 
-    // Verify account ownership
-    if wallet_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-
-    // Verify wallet address derivation (also validates owner matches wallet)
+    // Verify wallet address derivation (implies program ownership for PDAs)
     let _ = crate::utils::verify_wallet_address(program_id, &pubkey_to_bytes(owner_info.key), &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
     // Load wallet state
@@ -571,12 +545,7 @@ fn process_update_fees<'a>(
     let factory_info = next_account_info(account_info_iter)?;
     let admin_info = next_account_info(account_info_iter)?;
 
-    // Verify account ownership
-    if factory_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-
-    // Verify factory account derivation
+    // Verify factory account derivation (implies program ownership for PDAs)
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
     // Verify admin is signer

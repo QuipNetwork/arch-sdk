@@ -615,6 +615,19 @@ mod quip_tests {
         }
     }
 
+    fn assert_invalid_account_data(status: &Status) {
+        match status {
+            Status::Failed(err) => {
+                assert!(
+                    err.contains("invalid account data"),
+                    "Expected InvalidAccountData, got: {}",
+                    err
+                );
+            }
+            _ => panic!("Expected InvalidAccountData failure, got: {:?}", status),
+        }
+    }
+
 
     /// Execute a withdraw fees operation
     fn execute_withdraw_fees(
@@ -1296,8 +1309,8 @@ mod quip_tests {
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
         println!("Uninitialized factory status: {:?}", processed_tx.status);
 
-        // Factory not owned by program yet (uninitialized)
-        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+        // Factory not initialized = invalid account data
+        assert_invalid_account_data(&processed_tx.status);
 
         println!("\n=== Test PASSED: DepositToWinternitz Uninitialized Factory ===\n");
     }
@@ -1364,8 +1377,8 @@ mod quip_tests {
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
         println!("Wrong factory PDA status: {:?}", processed_tx.status);
 
-        // Wrong factory is not owned by program
-        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+        // Wrong factory fails PDA derivation check
+        assert_error(&processed_tx.status, QuipError::InvalidAccountDerivation);
 
         println!("\n=== Test PASSED: DepositToWinternitz Wrong Factory PDA ===\n");
     }
@@ -1959,7 +1972,17 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+        // The Arch runtime rejects the fake system program before our code runs
+        match &processed_tx.status {
+            Status::Failed(err) => {
+                assert!(
+                    err.contains("incorrect program id"),
+                    "Expected runtime 'incorrect program id' error, got: {}",
+                    err
+                );
+            }
+            _ => panic!("Expected failure, got: {:?}", processed_tx.status),
+        }
 
         println!("\n=== Test PASSED: Fake System Program Rejected ===\n");
     }
@@ -2225,8 +2248,8 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        // Factory not initialized = not owned by program
-        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+        // Factory not initialized = invalid account data
+        assert_invalid_account_data(&processed_tx.status);
 
         println!("\n=== Test PASSED: TransferWithWinternitz Uninitialized Factory ===\n");
     }
@@ -2297,8 +2320,8 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        // Wallet not created = not owned by program
-        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+        // Wallet not created = invalid account data
+        assert_invalid_account_data(&processed_tx.status);
 
         println!("\n=== Test PASSED: TransferWithWinternitz Uninitialized Wallet ===\n");
     }
@@ -2373,8 +2396,8 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        // Random account is not owned by program
-        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+        // Random account fails PDA derivation check
+        assert_error(&processed_tx.status, QuipError::InvalidAccountDerivation);
 
         println!("\n=== Test PASSED: TransferWithWinternitz Wrong Factory PDA ===\n");
     }
@@ -2568,8 +2591,8 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        // Wallet not created = not owned by program
-        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+        // Wallet not created = invalid account data
+        assert_invalid_account_data(&processed_tx.status);
 
         println!("\n=== Test PASSED: ChangePqOwner Uninitialized Wallet ===\n");
     }
@@ -4079,8 +4102,8 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        // Should fail because factory is not owned by program (not initialized)
-        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+        // Should fail because factory is not initialized = invalid account data
+        assert_invalid_account_data(&processed_tx.status);
 
         println!("\n=== Test PASSED: ExecuteWithWinternitz Uninitialized Factory ===\n");
     }
@@ -4159,8 +4182,8 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        // Should fail because wallet is not owned by program (not created)
-        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+        // Should fail because wallet is not created = invalid account data
+        assert_invalid_account_data(&processed_tx.status);
 
         println!("\n=== Test PASSED: ExecuteWithWinternitz Uninitialized Wallet ===\n");
     }
@@ -4244,8 +4267,8 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        // Should fail because fake factory is not owned by program
-        assert_error(&processed_tx.status, QuipError::IncorrectProgramOwner);
+        // Should fail because fake factory fails PDA derivation check
+        assert_error(&processed_tx.status, QuipError::InvalidAccountDerivation);
 
         println!("\n=== Test PASSED: ExecuteWithWinternitz Wrong Factory PDA ===\n");
     }
