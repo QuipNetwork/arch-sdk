@@ -785,6 +785,27 @@ fn process_transfer_ownership<'a>(
     Ok(())
 }
 
+/// Process a BTC transfer from a Quip wallet using WOTS+ signature authorization.
+///
+/// This function builds and signs a Bitcoin transaction that transfers funds from
+/// the wallet to a recipient. The wallet can spend either its anchor UTXO or any
+/// non-anchor UTXO it owns.
+///
+/// # Key Constraints
+///
+/// - **Anchor UTXO**: Must always leave >= dust (330 sats) as change to keep the
+///   wallet account anchored.
+/// - **Non-anchor UTXO**: Can be fully spent (change = 0) since the wallet remains
+///   anchored to its primary UTXO.
+/// - **WOTS+ Key Rotation**: The signing key is rotated after each transaction for
+///   quantum resistance. Each key can only be used once.
+///
+/// # Accounts
+///
+/// 0. `[writable]` Factory - Program state, receives transfer fee
+/// 1. `[writable]` Wallet - The wallet PDA being spent from
+/// 2. `[writable, signer]` Owner - Pays Arch tx fees and lamport transfer fee
+/// 3. `[]` System Program
 fn process_btc_transfer_with_winternitz<'a>(
     program_id: &Pubkey,
     accounts: &'a [AccountInfo<'a>],
@@ -922,27 +943,36 @@ fn process_btc_transfer_with_winternitz<'a>(
 
     // --- Build Bitcoin transaction ---
     //
-    // CRITICAL LAYOUT CONSTRAINT: set_transaction_to_sign uses InputToSign.index
-    // as BOTH the input index to sign AND the output vout for the account's new
-    // UTXO. Therefore, each signed account's input and output MUST be at the same
-    // index. We achieve this by placing account pass-through outputs first, then
-    // the recipient output last.
+    // TRANSACTION LAYOUT
+    // ==================
     //
-    // Layout for ANCHOR UTXO (spending anchor):
-    //   Input 0 / Output 0 : wallet anchor (change = utxo_value - amount, always > 0)
-    //   Input 1 / Output 1 : factory (pass-through)
-    //   Input 2 / Output 2 : owner (pass-through for fees)
-    //   Input 3            : fee input
-    //   Output 3           : recipient (amount)
+    // The Arch runtime requires that each account's input and output are at matching
+    // indices (Input N / Output N) for UTXO tracking. We place account pass-through
+    // outputs first, then variable outputs (change/recipient) last.
     //
-    // Layout for NON-ANCHOR UTXO (spending non-anchor):
-    //   Input 0 / Output 0 : wallet anchor (pass-through, value unchanged)
+    // Case 1: ANCHOR UTXO spending
+    //   Input 0 / Output 0 : wallet (change = utxo_value - amount, must be >= dust)
     //   Input 1 / Output 1 : factory (pass-through)
-    //   Input 2 / Output 2 : owner (pass-through for fees)
-    //   Input 3            : source_utxo (non-anchor, being spent)
-    //   Input 4            : fee input
-    //   Output 3           : wallet change (if change > 0)
-    //   Output 3 or 4      : recipient (amount)
+    //   Input 2 / Output 2 : owner (pass-through)
+    //   Input 3            : fee input (unsigned)
+    //   Output 3           : recipient
+    //
+    // Case 2: NON-ANCHOR UTXO with change (change > 0)
+    //   Input 0 / Output 0 : wallet anchor (pass-through, unchanged)
+    //   Input 1 / Output 1 : factory (pass-through)
+    //   Input 2 / Output 2 : owner (pass-through)
+    //   Input 3            : non-anchor UTXO (fully consumed)
+    //   Input 4            : fee input (unsigned)
+    //   Output 3           : wallet change
+    //   Output 4           : recipient
+    //
+    // Case 3: NON-ANCHOR UTXO full spend (change = 0)
+    //   Input 0 / Output 0 : wallet anchor (pass-through, unchanged)
+    //   Input 1 / Output 1 : factory (pass-through)
+    //   Input 2 / Output 2 : owner (pass-through)
+    //   Input 3            : non-anchor UTXO (fully consumed)
+    //   Input 4            : fee input (unsigned)
+    //   Output 3           : recipient (no change output)
 
     let wallet_script_bytes = get_account_script_pubkey(wallet_info.key);
     let wallet_script = ScriptBuf::from_bytes(wallet_script_bytes.to_vec());
@@ -1049,37 +1079,25 @@ fn process_btc_transfer_with_winternitz<'a>(
 
     // Threshold-sign program-owned PDA inputs (wallet + factory).
     //
-    // CRITICAL: The Arch runtime sets account.utxo to the LAST signed input's index.
-    // For non-anchor UTXO spending, we must sign the non-anchor input (index 3) BEFORE
-    // the anchor input (index 0), so wallet.utxo ends up pointing to Output 0 (the anchor).
+    // CRITICAL - InputToSign Ordering:
+    // The Arch runtime updates account.utxo to (txid, index) for EACH InputToSign entry,
+    // meaning the LAST entry for a given signer determines the account's final UTXO.
+    //
+    // For non-anchor spending, the wallet signs TWO inputs (index 0 and index 3).
+    // We must order them so index 0 (anchor) is signed LAST, ensuring wallet.utxo
+    // points to Output 0 (the anchor pass-through) rather than Output 3 (recipient).
+    //
+    // This allows full spending of non-anchor UTXOs while preserving the wallet's anchor.
     let inputs_to_sign = if !is_anchor_utxo {
-        // Non-anchor: sign index 3 first, then factory, then anchor last
-        // This ensures wallet.utxo = (txid, 0) pointing to the anchor output
         vec![
-            InputToSign {
-                index: 3,
-                signer: wallet_info.key.clone(),
-            },
-            InputToSign {
-                index: 1,
-                signer: factory_info.key.clone(),
-            },
-            InputToSign {
-                index: 0,
-                signer: wallet_info.key.clone(),
-            },
+            InputToSign { index: 3, signer: wallet_info.key.clone() }, // non-anchor (first)
+            InputToSign { index: 1, signer: factory_info.key.clone() },
+            InputToSign { index: 0, signer: wallet_info.key.clone() }, // anchor (last)
         ]
     } else {
-        // Anchor spending: normal order
         vec![
-            InputToSign {
-                index: 0,
-                signer: wallet_info.key.clone(),
-            },
-            InputToSign {
-                index: 1,
-                signer: factory_info.key.clone(),
-            },
+            InputToSign { index: 0, signer: wallet_info.key.clone() },
+            InputToSign { index: 1, signer: factory_info.key.clone() },
         ]
     };
     set_transaction_to_sign(accounts, &btc_tx, &inputs_to_sign)?;
