@@ -33,11 +33,12 @@ use arch_program::{
     pubkey::Pubkey,
     system_instruction::sign_input,
 };
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::BorshDeserialize;
 
 use crate::error::QuipError;
 use crate::instruction::QuipInstruction;
 use crate::state::{VERSION, *};
+use crate::utils::{load_state, require_admin, require_signer, require_valid_signature, save_state};
 
 /// Program result type
 pub type ProgramResult = Result<(), ProgramError>;
@@ -218,9 +219,7 @@ fn process_initialize_factory<'a>(
     };
 
     // Serialize and write to account
-    let mut data = factory_info.try_borrow_mut_data()?;
-    factory.serialize(&mut &mut data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
+    save_state(&factory, factory_info)?;
 
     msg!("Factory initialized with admin: {}", hex::encode(admin));
     Ok(())
@@ -245,9 +244,7 @@ fn process_deposit_to_winternitz<'a>(
     crate::utils::verify_system_program(system_program_info)?;
 
     // Verify owner is signer
-    if !owner_info.is_signer {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
+    require_signer(owner_info).map_err(|_| QuipError::UnauthorizedSigner)?;
 
     // Verify factory ownership (must already exist)
     if factory_info.owner != program_id {
@@ -274,10 +271,7 @@ fn process_deposit_to_winternitz<'a>(
 
 
     // Load factory
-    let factory_data = factory_info.try_borrow_data()?;
-    let mut factory = QuipFactory::try_from_slice(&factory_data)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(factory_data);
+    let mut factory: QuipFactory = load_state(factory_info)?;
 
     // Transfer creation fee from owner to factory
     crate::utils::transfer_value_from_signer(owner_info, factory_info, factory.creation_fee)?;
@@ -288,10 +282,7 @@ fn process_deposit_to_winternitz<'a>(
     }
 
     // Update factory counters
-    factory.accumulated_fees = factory
-        .accumulated_fees
-        .checked_add(factory.creation_fee)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+    factory.accumulate_fee(factory.creation_fee);
     factory.total_wallets = factory
         .total_wallets
         .checked_add(1)
@@ -309,15 +300,9 @@ fn process_deposit_to_winternitz<'a>(
         bump: wallet_bump,
     };
 
-    // Serialize wallet state
-    let mut wallet_data = wallet_info.try_borrow_mut_data()?;
-    wallet.serialize(&mut &mut wallet_data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-
-    // Serialize factory state
-    let mut factory_data = factory_info.try_borrow_mut_data()?;
-    factory.serialize(&mut &mut factory_data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
+    // Serialize wallet and factory state
+    save_state(&wallet, wallet_info)?;
+    save_state(&factory, factory_info)?;
 
     msg!(
         "Wallet created with vault_id: {}, deposit: {}",
@@ -343,9 +328,7 @@ fn process_transfer_with_winternitz<'a>(
     let owner_info = next_account_info(account_info_iter)?;
 
     // Verify owner is signer
-    if !owner_info.is_signer {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
+    require_signer(owner_info).map_err(|_| QuipError::UnauthorizedSigner)?;
 
     // Verify account ownership
     if factory_info.owner != program_id {
@@ -362,15 +345,8 @@ fn process_transfer_with_winternitz<'a>(
     let _ = crate::utils::verify_wallet_address(program_id, &owner, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
     // Load states
-    let factory_data = factory_info.try_borrow_data()?;
-    let mut factory = QuipFactory::try_from_slice(&factory_data)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(factory_data);
-
-    let wallet_data = wallet_info.try_borrow_data()?;
-    let mut wallet = QuipWallet::try_from_slice(&wallet_data)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(wallet_data);
+    let mut factory: QuipFactory = load_state(factory_info)?;
+    let mut wallet: QuipWallet = load_state(wallet_info)?;
 
     // Pre-check wallet balance: fee + transfer amount
     let total_required = factory.transfer_fee
@@ -386,11 +362,7 @@ fn process_transfer_with_winternitz<'a>(
         &recipient_bytes,
         amount,
     );
-
-    let is_valid = crate::utils::verify_winternitz_signature(&wallet.pq_owner, &message, &signature)?;
-    if !is_valid {
-        return Err(QuipError::InvalidWotsSignature.into());
-    }
+    require_valid_signature(&wallet.pq_owner, &message, &signature)?;
 
     // Transfer fee from wallet to factory
     crate::utils::transfer_value(wallet_info, factory_info, factory.transfer_fee)?;
@@ -398,29 +370,17 @@ fn process_transfer_with_winternitz<'a>(
     // Transfer the amount from wallet to recipient
     crate::utils::transfer_value(wallet_info, recipient_info, amount)?;
 
-    // Update accumulated fees counter
-    factory.accumulated_fees = factory
-        .accumulated_fees
-        .checked_add(factory.transfer_fee)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+    // Update factory fees
+    factory.accumulate_fee(factory.transfer_fee);
 
     // Update wallet state
-    wallet.pq_owner = pq_next;
-    wallet.transaction_count = wallet
-        .transaction_count
-        .checked_add(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+    wallet.rotate_key(pq_next);
+    wallet.increment_transaction_count();
     wallet.last_activity = get_bitcoin_block_height() as i64;
 
     // Serialize updated states
-    let mut factory_data = factory_info.try_borrow_mut_data()?;
-    factory.serialize(&mut &mut factory_data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(factory_data);
-
-    let mut wallet_data = wallet_info.try_borrow_mut_data()?;
-    wallet.serialize(&mut &mut wallet_data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
+    save_state(&factory, factory_info)?;
+    save_state(&wallet, wallet_info)?;
 
     msg!(
         "Transfer of {} to {} executed with vault_id: {}",
@@ -448,9 +408,7 @@ fn process_execute_with_winternitz<'a>(
     let system_program_info = next_account_info(account_info_iter)?;
 
     // Verify owner is signer
-    if !owner_info.is_signer {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
+    require_signer(owner_info).map_err(|_| QuipError::UnauthorizedSigner)?;
 
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
@@ -470,15 +428,8 @@ fn process_execute_with_winternitz<'a>(
     let _ = crate::utils::verify_wallet_address(program_id, &owner, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
     // Load states
-    let factory_data = factory_info.try_borrow_data()?;
-    let mut factory = QuipFactory::try_from_slice(&factory_data)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(factory_data);
-
-    let wallet_data = wallet_info.try_borrow_data()?;
-    let mut wallet = QuipWallet::try_from_slice(&wallet_data)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(wallet_data);
+    let mut factory: QuipFactory = load_state(factory_info)?;
+    let mut wallet: QuipWallet = load_state(wallet_info)?;
 
     // Pre-check owner balance for execute fee (owner pays, not wallet)
     crate::utils::check_sufficient_balance(owner_info, factory.execute_fee)?;
@@ -507,47 +458,34 @@ fn process_execute_with_winternitz<'a>(
         &account_pubkeys,
         &account_metas,
     );
+    require_valid_signature(&wallet.pq_owner, &message, &signature)?;
 
-    let is_valid = crate::utils::verify_winternitz_signature(&wallet.pq_owner, &message, &signature)?;
-    if !is_valid {
-        return Err(QuipError::InvalidWotsSignature.into());
-    }
-
-    // Build wallet PDA seeds for signing
-    let wallet_seeds: &[&[u8]] = &[
-        b"wallet",
-        wallet.owner.as_ref(),
-        vault_id.as_ref(),
-        &[wallet.bump],
-    ];
+    // Copy values needed for wallet_seeds before mutating wallet
+    let wallet_owner = wallet.owner;
+    let wallet_bump = wallet.bump;
 
     // Transfer execute fee from owner to factory
     crate::utils::transfer_value_from_signer(owner_info, factory_info, factory.execute_fee)?;
 
-    // Update accumulated fees counter
-    factory.accumulated_fees = factory
-        .accumulated_fees
-        .checked_add(factory.execute_fee)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+    // Update factory fees
+    factory.accumulate_fee(factory.execute_fee);
 
     // Update wallet state
-    wallet.pq_owner = pq_next;
-    wallet.transaction_count = wallet
-        .transaction_count
-        .checked_add(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+    wallet.rotate_key(pq_next);
+    wallet.increment_transaction_count();
     wallet.last_activity = get_bitcoin_block_height() as i64;
 
     // Serialize updated states
-    let mut factory_data = factory_info.try_borrow_mut_data()?;
-    factory.serialize(&mut &mut factory_data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(factory_data);
+    save_state(&factory, factory_info)?;
+    save_state(&wallet, wallet_info)?;
 
-    let mut wallet_data = wallet_info.try_borrow_mut_data()?;
-    wallet.serialize(&mut &mut wallet_data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(wallet_data);
+    // Build wallet PDA seeds for signing (uses copied values)
+    let wallet_seeds: &[&[u8]] = &[
+        b"wallet",
+        wallet_owner.as_ref(),
+        vault_id.as_ref(),
+        &[wallet_bump],
+    ];
 
     // Build the CPI instruction
     let cpi_account_metas: Vec<AccountMeta> = remaining_accounts
@@ -594,9 +532,7 @@ fn process_change_pq_owner<'a>(
     let owner_info = next_account_info(account_info_iter)?;
 
     // Verify owner is signer
-    if !owner_info.is_signer {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
+    require_signer(owner_info).map_err(|_| QuipError::UnauthorizedSigner)?;
 
     // Verify account ownership
     if wallet_info.owner != program_id {
@@ -607,27 +543,18 @@ fn process_change_pq_owner<'a>(
     let _ = crate::utils::verify_wallet_address(program_id, &pubkey_to_bytes(owner_info.key), &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
     // Load wallet state
-    let wallet_data = wallet_info.try_borrow_data()?;
-    let mut wallet = QuipWallet::try_from_slice(&wallet_data)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(wallet_data);
+    let mut wallet: QuipWallet = load_state(wallet_info)?;
 
     // Verify signature
     let message = crate::utils::create_change_owner_message(&wallet.pq_owner, &pq_next);
-
-    let is_valid = crate::utils::verify_winternitz_signature(&wallet.pq_owner, &message, &signature)?;
-    if !is_valid {
-        return Err(QuipError::InvalidWotsSignature.into());
-    }
+    require_valid_signature(&wallet.pq_owner, &message, &signature)?;
 
     // Update wallet state
-    wallet.pq_owner = pq_next;
+    wallet.rotate_key(pq_next);
     wallet.last_activity = get_bitcoin_block_height() as i64;
 
     // Serialize updated state
-    let mut wallet_data = wallet_info.try_borrow_mut_data()?;
-    wallet.serialize(&mut &mut wallet_data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
+    save_state(&wallet, wallet_info)?;
 
     msg!("Post-quantum owner changed");
     Ok(())
@@ -653,20 +580,11 @@ fn process_update_fees<'a>(
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
     // Verify admin is signer
-    if !admin_info.is_signer {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
+    require_signer(admin_info).map_err(|_| QuipError::UnauthorizedSigner)?;
 
-    // Load factory
-    let factory_data = factory_info.try_borrow_data()?;
-    let mut factory = QuipFactory::try_from_slice(&factory_data)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(factory_data);
-
-    // Verify admin matches
-    if pubkey_to_bytes(admin_info.key) != factory.admin {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
+    // Load factory and verify admin
+    let mut factory: QuipFactory = load_state(factory_info)?;
+    require_admin(&factory, &pubkey_to_bytes(admin_info.key))?;
 
     // Update fees
     factory.creation_fee = creation_fee;
@@ -674,9 +592,7 @@ fn process_update_fees<'a>(
     factory.execute_fee = execute_fee;
 
     // Serialize updated factory
-    let mut data = factory_info.try_borrow_mut_data()?;
-    factory.serialize(&mut &mut data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
+    save_state(&factory, factory_info)?;
 
     msg!(
         "Fees updated: creation={}, transfer={}, execute={}",
@@ -701,20 +617,11 @@ fn process_withdraw_fees<'a>(
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
     // Verify admin is signer
-    if !admin_info.is_signer {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
+    require_signer(admin_info).map_err(|_| QuipError::UnauthorizedSigner)?;
 
-    // Load factory
-    let factory_data = factory_info.try_borrow_data()?;
-    let mut factory = QuipFactory::try_from_slice(&factory_data)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(factory_data);
-
-    // Verify admin matches
-    if pubkey_to_bytes(admin_info.key) != factory.admin {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
+    // Load factory and verify admin
+    let mut factory: QuipFactory = load_state(factory_info)?;
+    require_admin(&factory, &pubkey_to_bytes(admin_info.key))?;
 
     // Verify sufficient fees (both tracked and actual balance)
     if factory.accumulated_fees < amount {
@@ -732,9 +639,7 @@ fn process_withdraw_fees<'a>(
     crate::utils::transfer_value(factory_info, recipient_info, amount)?;
 
     // Serialize updated factory (after transfer to ensure state consistency)
-    let mut data = factory_info.try_borrow_mut_data()?;
-    factory.serialize(&mut &mut data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
+    save_state(&factory, factory_info)?;
 
     msg!("Withdrew {} fees", amount);
     Ok(())
@@ -753,29 +658,18 @@ fn process_transfer_ownership<'a>(
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
 
     // Verify admin is signer
-    if !admin_info.is_signer {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
+    require_signer(admin_info).map_err(|_| QuipError::UnauthorizedSigner)?;
 
-    // Load factory
-    let factory_data = factory_info.try_borrow_data()?;
-    let mut factory = QuipFactory::try_from_slice(&factory_data)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(factory_data);
-
-    // Verify admin matches
-    if pubkey_to_bytes(admin_info.key) != factory.admin {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
+    // Load factory and verify admin
+    let mut factory: QuipFactory = load_state(factory_info)?;
+    require_admin(&factory, &pubkey_to_bytes(admin_info.key))?;
 
     // Update admin
     let old_admin = factory.admin;
     factory.admin = new_admin;
 
     // Serialize updated factory
-    let mut data = factory_info.try_borrow_mut_data()?;
-    factory.serialize(&mut &mut data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
+    save_state(&factory, factory_info)?;
 
     msg!(
         "Ownership transferred from {} to {}",
@@ -836,15 +730,8 @@ fn process_btc_transfer_with_winternitz<'a>(
     let _ = crate::utils::verify_wallet_address(program_id, &owner_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
     // Load states
-    let factory_data = factory_info.try_borrow_data()?;
-    let mut factory = QuipFactory::try_from_slice(&factory_data)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(factory_data);
-
-    let wallet_data = wallet_info.try_borrow_data()?;
-    let mut wallet = QuipWallet::try_from_slice(&wallet_data)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(wallet_data);
+    let mut factory: QuipFactory = load_state(factory_info)?;
+    let mut wallet: QuipWallet = load_state(wallet_info)?;
 
     // Pre-check owner lamport balance for transfer fee (owner pays, not wallet)
     crate::utils::check_sufficient_balance(owner_info, factory.transfer_fee)?;
@@ -874,10 +761,7 @@ fn process_btc_transfer_with_winternitz<'a>(
         amount,
         &source_utxo,
     );
-    let is_valid = crate::utils::verify_winternitz_signature(&wallet.pq_owner, &message, &signature)?;
-    if !is_valid {
-        return Err(QuipError::InvalidWotsSignature.into());
-    }
+    require_valid_signature(&wallet.pq_owner, &message, &signature)?;
 
     // Get source UTXO value
     let utxo_value = get_bitcoin_tx_output_value(
@@ -891,16 +775,16 @@ fn process_btc_transfer_with_winternitz<'a>(
         .checked_sub(amount)
         .ok_or::<ProgramError>(QuipError::InsufficientBtcBalance.into())?;
 
-    if is_anchor_utxo {
-        // Anchor UTXO: must keep >= dust limit (cannot close account)
-        if change < BTC_DUST_LIMIT {
-            return Err(QuipError::InsufficientBtcBalance.into());
-        }
-    } else {
-        // Non-anchor UTXO: full spend OK (change=0), otherwise change >= dust limit
-        if change > 0 && change < BTC_DUST_LIMIT {
-            return Err(QuipError::ChangeBelowDustLimit.into());
-        }
+    // Anchor UTXO: must keep >= dust limit (cannot close account)
+    let anchor_insufficient = is_anchor_utxo && change < BTC_DUST_LIMIT;
+    if anchor_insufficient {
+        return Err(QuipError::InsufficientBtcBalance.into());
+    }
+
+    // Non-anchor UTXO: full spend OK (change=0), otherwise change >= dust limit
+    let non_anchor_dust = !is_anchor_utxo && change > 0 && change < BTC_DUST_LIMIT;
+    if non_anchor_dust {
+        return Err(QuipError::ChangeBelowDustLimit.into());
     }
 
     // Deserialize the fee transaction and extract its first input as the fee input
@@ -917,29 +801,16 @@ fn process_btc_transfer_with_winternitz<'a>(
     crate::utils::transfer_value_from_signer(owner_info, factory_info, factory.transfer_fee)?;
 
     // Update factory accumulated fees
-    factory.accumulated_fees = factory
-        .accumulated_fees
-        .checked_add(factory.transfer_fee)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+    factory.accumulate_fee(factory.transfer_fee);
 
     // Rotate WOTS+ key (critical: each key must only be used once)
-    wallet.pq_owner = pq_next;
-    wallet.transaction_count = wallet
-        .transaction_count
-        .checked_add(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+    wallet.rotate_key(pq_next);
+    wallet.increment_transaction_count();
     wallet.last_activity = get_bitcoin_block_height() as i64;
 
     // Serialize updated states
-    let mut factory_data = factory_info.try_borrow_mut_data()?;
-    factory.serialize(&mut &mut factory_data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(factory_data);
-
-    let mut wallet_data = wallet_info.try_borrow_mut_data()?;
-    wallet.serialize(&mut &mut wallet_data[..])
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-    drop(wallet_data);
+    save_state(&factory, factory_info)?;
+    save_state(&wallet, wallet_info)?;
 
     // --- Build Bitcoin transaction ---
     //
@@ -1077,29 +948,8 @@ fn process_btc_transfer_with_winternitz<'a>(
     // Fee input: Input 3 for anchor, Input 4 for non-anchor
     btc_tx.input.push(fee_input);
 
-    // Threshold-sign program-owned PDA inputs (wallet + factory).
-    //
-    // CRITICAL - InputToSign Ordering:
-    // The Arch runtime updates account.utxo to (txid, index) for EACH InputToSign entry,
-    // meaning the LAST entry for a given signer determines the account's final UTXO.
-    //
-    // For non-anchor spending, the wallet signs TWO inputs (index 0 and index 3).
-    // We must order them so index 0 (anchor) is signed LAST, ensuring wallet.utxo
-    // points to Output 0 (the anchor pass-through) rather than Output 3 (recipient).
-    //
-    // This allows full spending of non-anchor UTXOs while preserving the wallet's anchor.
-    let inputs_to_sign = if !is_anchor_utxo {
-        vec![
-            InputToSign { index: 3, signer: wallet_info.key.clone() }, // non-anchor (first)
-            InputToSign { index: 1, signer: factory_info.key.clone() },
-            InputToSign { index: 0, signer: wallet_info.key.clone() }, // anchor (last)
-        ]
-    } else {
-        vec![
-            InputToSign { index: 0, signer: wallet_info.key.clone() },
-            InputToSign { index: 1, signer: factory_info.key.clone() },
-        ]
-    };
+    // Threshold-sign program-owned PDA inputs (wallet + factory)
+    let inputs_to_sign = build_inputs_to_sign(wallet_info.key, factory_info.key, is_anchor_utxo);
     set_transaction_to_sign(accounts, &btc_tx, &inputs_to_sign)?;
 
     // Sign the owner's BTC input (index 2). The owner is system-owned,
@@ -1115,4 +965,38 @@ fn process_btc_transfer_with_winternitz<'a>(
         hex::encode(vault_id)
     );
     Ok(())
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Build the InputToSign array for BTC transfer transactions.
+///
+/// CRITICAL - InputToSign Ordering:
+/// The Arch runtime updates account.utxo to (txid, index) for EACH InputToSign entry,
+/// meaning the LAST entry for a given signer determines the account's final UTXO.
+///
+/// For non-anchor spending, the wallet signs TWO inputs (index 0 and index 3).
+/// We must order them so index 0 (anchor) is signed LAST, ensuring wallet.utxo
+/// points to Output 0 (the anchor pass-through) rather than Output 3 (recipient).
+///
+/// This allows full spending of non-anchor UTXOs while preserving the wallet's anchor.
+fn build_inputs_to_sign(
+    wallet_key: &Pubkey,
+    factory_key: &Pubkey,
+    is_anchor_utxo: bool,
+) -> Vec<InputToSign> {
+    if is_anchor_utxo {
+        vec![
+            InputToSign { index: 0, signer: wallet_key.clone() },
+            InputToSign { index: 1, signer: factory_key.clone() },
+        ]
+    } else {
+        vec![
+            InputToSign { index: 3, signer: wallet_key.clone() }, // non-anchor (first)
+            InputToSign { index: 1, signer: factory_key.clone() },
+            InputToSign { index: 0, signer: wallet_key.clone() }, // anchor (last)
+        ]
+    }
 }

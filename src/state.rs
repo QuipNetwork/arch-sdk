@@ -76,6 +76,11 @@ impl QuipFactory {
         8 + // accumulated_fees
         1; // bump
     // = 73 bytes (no discriminator in arch-program)
+
+    /// Accumulate a fee into the factory's fee pool (saturating to prevent overflow)
+    pub fn accumulate_fee(&mut self, fee: u64) {
+        self.accumulated_fees = self.accumulated_fees.saturating_add(fee);
+    }
 }
 
 // =============================================================================
@@ -114,6 +119,16 @@ impl QuipWallet {
         1 +   // bump
         1;    // version
     // = 122 bytes
+
+    /// Rotate the WOTS+ key after a transaction (key can only be used once)
+    pub fn rotate_key(&mut self, new_pq_owner: WinternitzPublicKey) {
+        self.pq_owner = new_pq_owner;
+    }
+
+    /// Increment transaction count (saturating to prevent overflow)
+    pub fn increment_transaction_count(&mut self) {
+        self.transaction_count = self.transaction_count.saturating_add(1);
+    }
 }
 
 // =============================================================================
