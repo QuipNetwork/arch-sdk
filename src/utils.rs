@@ -227,12 +227,13 @@ pub fn create_change_owner_message(
 }
 
 /// Create a message for BTC transfer operations
-/// Message format: current_key || next_key || len(script_pubkey) as u32 LE || script_pubkey || amount
+/// Message format: current_key || next_key || len(script_pubkey) as u32 LE || script_pubkey || amount || source_utxo_txid || source_utxo_vout
 pub fn create_btc_transfer_message(
     current_key: &WinternitzPublicKey,
     next_key: &WinternitzPublicKey,
     recipient_script_pubkey: &[u8],
     amount: u64,
+    source_utxo: &arch_program::utxo::UtxoMeta,
 ) -> Vec<u8> {
     let mut message = Vec::new();
     message.extend_from_slice(&current_key.public_seed);
@@ -242,6 +243,8 @@ pub fn create_btc_transfer_message(
     message.extend_from_slice(&(recipient_script_pubkey.len() as u32).to_le_bytes());
     message.extend_from_slice(recipient_script_pubkey);
     message.extend_from_slice(&amount.to_le_bytes());
+    message.extend_from_slice(source_utxo.txid()); // 32 bytes
+    message.extend_from_slice(&source_utxo.vout().to_le_bytes()); // 4 bytes
     message
 }
 

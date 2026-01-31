@@ -76,6 +76,12 @@ pub enum QuipError {
 
     #[error("Insufficient BTC balance in wallet UTXO")]
     InsufficientBtcBalance,
+
+    #[error("UTXO is not owned by wallet account")]
+    UtxoNotOwnedByWallet,
+
+    #[error("Change amount is below dust limit (must be >= 330 sats or 0)")]
+    ChangeBelowDustLimit,
 }
 
 impl From<QuipError> for ProgramError {

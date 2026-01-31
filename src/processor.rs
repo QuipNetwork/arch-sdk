@@ -27,7 +27,7 @@ use arch_program::{
     msg,
     program::{
         get_account_script_pubkey, get_bitcoin_block_height, get_bitcoin_tx_output_value,
-        invoke, invoke_signed, set_transaction_to_sign,
+        invoke, invoke_signed, set_transaction_to_sign, validate_utxo_ownership,
     },
     program_error::ProgramError,
     pubkey::Pubkey,
@@ -150,6 +150,7 @@ pub fn process_instruction<'a>(
             amount,
             recipient_script_pubkey,
             fee_tx,
+            source_utxo,
             signature,
         } => {
             msg!("Instruction: BtcTransferWithWinternitz");
@@ -161,6 +162,7 @@ pub fn process_instruction<'a>(
                 amount,
                 recipient_script_pubkey,
                 fee_tx,
+                source_utxo,
                 signature,
             )
         }
@@ -791,6 +793,7 @@ fn process_btc_transfer_with_winternitz<'a>(
     amount: u64,
     recipient_script_pubkey: Vec<u8>,
     fee_tx: Vec<u8>,
+    source_utxo: arch_program::utxo::UtxoMeta,
     signature: WinternitzSignature,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
@@ -805,22 +808,9 @@ fn process_btc_transfer_with_winternitz<'a>(
     // Verify system program
     crate::utils::verify_system_program(system_program_info)?;
 
-    // Verify account ownership and permissions
-    if factory_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-    if wallet_info.owner != program_id {
-        return Err(QuipError::IncorrectProgramOwner.into());
-    }
-
-    // Verify owner is signer (required for WOTS+ authorization)
-    if !owner_info.is_signer {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
-
     let owner_bytes = pubkey_to_bytes(owner_info.key);
 
-    // Verify account derivations
+    // Verify account derivations (implies program ownership and wallet belongs to owner_bytes)
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
     let _ = crate::utils::verify_wallet_address(program_id, &owner_bytes, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
@@ -835,13 +825,8 @@ fn process_btc_transfer_with_winternitz<'a>(
         .map_err(|_| ProgramError::InvalidAccountData)?;
     drop(wallet_data);
 
-    // Verify caller is wallet owner
-    if owner_bytes != wallet.owner {
-        return Err(QuipError::UnauthorizedSigner.into());
-    }
-
-    // Pre-check wallet lamport balance for transfer fee
-    crate::utils::check_sufficient_balance(wallet_info, factory.transfer_fee)?;
+    // Pre-check owner lamport balance for transfer fee (owner pays, not wallet)
+    crate::utils::check_sufficient_balance(owner_info, factory.transfer_fee)?;
 
     // Validate inputs
     if amount == 0 {
@@ -851,40 +836,51 @@ fn process_btc_transfer_with_winternitz<'a>(
         return Err(ProgramError::InvalidArgument);
     }
 
-    // Verify WOTS+ signature
+    // Validate UTXO ownership - the source UTXO must belong to the wallet
+    if !validate_utxo_ownership(&source_utxo, wallet_info.key) {
+        return Err(QuipError::UtxoNotOwnedByWallet.into());
+    }
+
+    // Determine if this is the anchor UTXO (the UTXO that anchors the wallet account)
+    let is_anchor_utxo = source_utxo.txid() == wallet_info.utxo.txid()
+        && source_utxo.vout() == wallet_info.utxo.vout();
+
+    // Verify WOTS+ signature (includes source_utxo for replay protection)
     let message = crate::utils::create_btc_transfer_message(
         &wallet.pq_owner,
         &pq_next,
         &recipient_script_pubkey,
         amount,
+        &source_utxo,
     );
     let is_valid = crate::utils::verify_winternitz_signature(&wallet.pq_owner, &message, &signature)?;
     if !is_valid {
         return Err(QuipError::InvalidWotsSignature.into());
     }
 
-    // Get wallet's current UTXO value
+    // Get source UTXO value
     let utxo_value = get_bitcoin_tx_output_value(
-        wallet_info.utxo.txid_big_endian(),
-        wallet_info.utxo.vout(),
+        source_utxo.txid_big_endian(),
+        source_utxo.vout(),
     )
     .ok_or::<ProgramError>(QuipError::InsufficientBtcBalance.into())?;
 
-    // Verify sufficient BTC balance.
-    // The change output must stay above the Bitcoin dust limit (330 sats for P2TR)
-    // because Bitcoin nodes reject transactions with sub-dust outputs as non-standard.
-    // This means the maximum transferable amount is (utxo_value - BTC_DUST_LIMIT).
-    let max_transfer = utxo_value
-        .checked_sub(BTC_DUST_LIMIT)
-        .ok_or::<ProgramError>(QuipError::InsufficientBtcBalance.into())?;
-    if amount > max_transfer {
-        return Err(QuipError::InsufficientBtcBalance.into());
-    }
-
-    // Compute wallet change (guaranteed >= BTC_DUST_LIMIT by the check above)
-    let wallet_change = utxo_value
+    // Calculate change and validate based on UTXO type
+    let change = utxo_value
         .checked_sub(amount)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+        .ok_or::<ProgramError>(QuipError::InsufficientBtcBalance.into())?;
+
+    if is_anchor_utxo {
+        // Anchor UTXO: must keep >= dust limit (cannot close account)
+        if change < BTC_DUST_LIMIT {
+            return Err(QuipError::InsufficientBtcBalance.into());
+        }
+    } else {
+        // Non-anchor UTXO: full spend OK (change=0), otherwise change >= dust limit
+        if change > 0 && change < BTC_DUST_LIMIT {
+            return Err(QuipError::ChangeBelowDustLimit.into());
+        }
+    }
 
     // Deserialize the fee transaction and extract its first input as the fee input
     let fee_transaction: Transaction = bitcoin::consensus::deserialize(&fee_tx)
@@ -895,9 +891,9 @@ fn process_btc_transfer_with_winternitz<'a>(
 
     // --- State mutations (must happen BEFORE add_state_transition) ---
 
-    // Charge lamport transfer fee from wallet to factory.
-    // Both are program-owned PDAs, so direct lamport manipulation works.
-    crate::utils::transfer_value(wallet_info, factory_info, factory.transfer_fee)?;
+    // Charge lamport transfer fee from owner to factory.
+    // Owner is a system-owned signer, so we use the system program transfer.
+    crate::utils::transfer_value_from_signer(owner_info, factory_info, factory.transfer_fee)?;
 
     // Update factory accumulated fees
     factory.accumulated_fees = factory
@@ -932,21 +928,51 @@ fn process_btc_transfer_with_winternitz<'a>(
     // index. We achieve this by placing account pass-through outputs first, then
     // the recipient output last.
     //
-    // Layout:
-    //   Input 0 / Output 0 : wallet  (manual — custom change)
-    //   Input 1 / Output 1 : factory (add_state_transition — pass-through)
-    //   Input 2 / Output 2 : owner   (manual — pass-through, signed via sign_input)
-    //   Input 3 / ---      : fee input (pre-signed by client)
-    //   ---     / Output 3 : recipient (BTC transfer destination)
+    // Layout for ANCHOR UTXO (spending anchor):
+    //   Input 0 / Output 0 : wallet anchor (change = utxo_value - amount, always > 0)
+    //   Input 1 / Output 1 : factory (pass-through)
+    //   Input 2 / Output 2 : owner (pass-through for fees)
+    //   Input 3            : fee input
+    //   Output 3           : recipient (amount)
+    //
+    // Layout for NON-ANCHOR UTXO (spending non-anchor):
+    //   Input 0 / Output 0 : wallet anchor (pass-through, value unchanged)
+    //   Input 1 / Output 1 : factory (pass-through)
+    //   Input 2 / Output 2 : owner (pass-through for fees)
+    //   Input 3            : source_utxo (non-anchor, being spent)
+    //   Input 4            : fee input
+    //   Output 3           : wallet change (if change > 0)
+    //   Output 3 or 4      : recipient (amount)
 
     let wallet_script_bytes = get_account_script_pubkey(wallet_info.key);
     let wallet_script = ScriptBuf::from_bytes(wallet_script_bytes.to_vec());
+
+    // Get anchor UTXO value (needed for both layouts)
+    // Reuse already-fetched value when spending the anchor UTXO
+    let anchor_utxo_value = if is_anchor_utxo {
+        utxo_value
+    } else {
+        get_bitcoin_tx_output_value(
+            wallet_info.utxo.txid_big_endian(),
+            wallet_info.utxo.vout(),
+        )
+        .ok_or::<ProgramError>(QuipError::InsufficientBtcBalance.into())?
+    };
+
+    // Determine wallet anchor output value
+    let wallet_anchor_output_value = if is_anchor_utxo {
+        // Spending the anchor UTXO: change goes to anchor output
+        change
+    } else {
+        // Not spending anchor: anchor passes through unchanged
+        anchor_utxo_value
+    };
 
     let mut btc_tx = Transaction {
         version: Version::TWO,
         lock_time: LockTime::ZERO,
         input: vec![
-            // Input 0: wallet's current UTXO (manual — custom change amount)
+            // Input 0: wallet's anchor UTXO
             TxIn {
                 previous_output: OutPoint {
                     txid: wallet_info.utxo.to_txid(),
@@ -958,10 +984,10 @@ fn process_btc_transfer_with_winternitz<'a>(
             },
         ],
         output: vec![
-            // Output 0: wallet change (must be at same index as wallet input)
+            // Output 0: wallet anchor (change if spending anchor, pass-through otherwise)
             TxOut {
-                value: Amount::from_sat(wallet_change),
-                script_pubkey: wallet_script,
+                value: Amount::from_sat(wallet_anchor_output_value),
+                script_pubkey: wallet_script.clone(),
             },
         ],
     };
@@ -991,26 +1017,71 @@ fn process_btc_transfer_with_winternitz<'a>(
         ),
     });
 
-    // Output 3: recipient (placed after all account outputs to preserve index alignment)
+    // For non-anchor UTXO: add source_utxo as Input 3
+    if !is_anchor_utxo {
+        btc_tx.input.push(TxIn {
+            previous_output: OutPoint {
+                txid: source_utxo.to_txid(),
+                vout: source_utxo.vout(),
+            },
+            script_sig: ScriptBuf::default(),
+            sequence: Sequence::MAX,
+            witness: Witness::default(),
+        });
+    }
+
+    // For non-anchor UTXO with change: add wallet change output at index 3
+    if !is_anchor_utxo && change > 0 {
+        btc_tx.output.push(TxOut {
+            value: Amount::from_sat(change),
+            script_pubkey: wallet_script.clone(),
+        });
+    }
+
+    // Recipient output
     btc_tx.output.push(TxOut {
         value: Amount::from_sat(amount),
         script_pubkey: ScriptBuf::from_bytes(recipient_script_pubkey.clone()),
     });
 
-    // Input 3: fee input (pre-signed by client, covers BTC mining fee)
+    // Fee input: Input 3 for anchor, Input 4 for non-anchor
     btc_tx.input.push(fee_input);
 
     // Threshold-sign program-owned PDA inputs (wallet + factory).
-    let inputs_to_sign = vec![
-        InputToSign {
-            index: 0,
-            signer: wallet_info.key.clone(),
-        },
-        InputToSign {
-            index: 1,
-            signer: factory_info.key.clone(),
-        },
-    ];
+    //
+    // CRITICAL: The Arch runtime sets account.utxo to the LAST signed input's index.
+    // For non-anchor UTXO spending, we must sign the non-anchor input (index 3) BEFORE
+    // the anchor input (index 0), so wallet.utxo ends up pointing to Output 0 (the anchor).
+    let inputs_to_sign = if !is_anchor_utxo {
+        // Non-anchor: sign index 3 first, then factory, then anchor last
+        // This ensures wallet.utxo = (txid, 0) pointing to the anchor output
+        vec![
+            InputToSign {
+                index: 3,
+                signer: wallet_info.key.clone(),
+            },
+            InputToSign {
+                index: 1,
+                signer: factory_info.key.clone(),
+            },
+            InputToSign {
+                index: 0,
+                signer: wallet_info.key.clone(),
+            },
+        ]
+    } else {
+        // Anchor spending: normal order
+        vec![
+            InputToSign {
+                index: 0,
+                signer: wallet_info.key.clone(),
+            },
+            InputToSign {
+                index: 1,
+                signer: factory_info.key.clone(),
+            },
+        ]
+    };
     set_transaction_to_sign(accounts, &btc_tx, &inputs_to_sign)?;
 
     // Sign the owner's BTC input (index 2). The owner is system-owned,

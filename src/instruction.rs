@@ -130,10 +130,15 @@ pub enum QuipInstruction {
 
     /// Transfer BTC (satoshis) on the Bitcoin network using WOTS+ signature
     ///
-    /// Builds a Bitcoin transaction that spends the wallet PDA's UTXO,
+    /// Builds a Bitcoin transaction that spends the specified UTXO,
     /// sends `amount` satoshis to `recipient_script_pubkey`, and returns
-    /// change to the wallet. The Arch validator network threshold-signs
+    /// change to the wallet (if any). The Arch validator network threshold-signs
     /// the transaction. Charges `transfer_fee` in lamports.
+    ///
+    /// Change handling:
+    /// - If change > 0: Must be >= BTC_DUST_LIMIT (330 sats)
+    /// - Anchor UTXO: Cannot have zero change (would close the account)
+    /// - Non-anchor UTXO: Can have zero change (full spend allowed)
     ///
     /// Accounts:
     /// 0. `[writable]` Factory
@@ -149,6 +154,8 @@ pub enum QuipInstruction {
         recipient_script_pubkey: Vec<u8>,
         /// Serialized Bitcoin transaction providing the fee input
         fee_tx: Vec<u8>,
+        /// Which UTXO to spend (must be owned by wallet)
+        source_utxo: UtxoMeta,
         /// WOTS+ signature
         signature: WinternitzSignature,
     },
