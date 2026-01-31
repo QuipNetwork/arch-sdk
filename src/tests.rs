@@ -277,6 +277,7 @@ mod quip_tests {
 
     /// Create a wallet with WOTS+ key
     /// Create a wallet where the owner pays for creation and deposit.
+    /// Returns (wallet_pubkey, wallet_anchor_utxo)
     fn create_wallet(
         ctx: &TestContext,
         program_pubkey: Pubkey,
@@ -286,7 +287,7 @@ mod quip_tests {
         vault_id: [u8; 32],
         pq_key: &WinternitzPublicKey,
         deposit: u64,
-    ) -> Pubkey {
+    ) -> (Pubkey, UtxoMeta) {
         let owner_bytes = owner_pubkey.serialize();
 
         let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
@@ -305,7 +306,7 @@ mod quip_tests {
             vault_id,
             pq_owner: pq_key.clone(),
             deposit,
-            wallet_utxo,
+            wallet_utxo: wallet_utxo.clone(),
         }).expect("Failed to serialize instruction");
 
         let accounts = vec![
@@ -342,7 +343,7 @@ mod quip_tests {
         );
 
         println!("Wallet created: {:?}", wallet_pubkey);
-        wallet_pubkey
+        (wallet_pubkey, wallet_utxo)
     }
 
     /// Verify factory state
@@ -544,8 +545,9 @@ mod quip_tests {
         amount: u64,
         recipient_script_pubkey: Vec<u8>,
         fee_tx: Vec<u8>,
+        source_utxo: &UtxoMeta,
     ) -> (Status, Option<arch_program::hash::Hash>) {
-        let message = create_btc_transfer_message(pq_key, pq_next, &recipient_script_pubkey, amount);
+        let message = create_btc_transfer_message(pq_key, pq_next, &recipient_script_pubkey, amount, source_utxo);
         let signature_data = sign_message(private_key, &message);
 
         let instruction_data = borsh::to_vec(&QuipInstruction::BtcTransferWithWinternitz {
@@ -554,6 +556,7 @@ mod quip_tests {
             amount,
             recipient_script_pubkey,
             fee_tx,
+            source_utxo: source_utxo.clone(),
             signature: WinternitzSignature { signature_data },
         }).unwrap();
 
@@ -956,7 +959,7 @@ mod quip_tests {
         let initial_deposit: u64 = 5000;
         let (pq_key, _private_key) = generate_wots_keypair(1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, initial_deposit,
         );
@@ -1010,7 +1013,7 @@ mod quip_tests {
         let vault_id = [2u8; 32];
         let (pq_key, _) = generate_wots_keypair(2);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 0, // No deposit
         );
@@ -1041,7 +1044,7 @@ mod quip_tests {
         let (pq_key_1, _) = generate_wots_keypair(100);
         let initial_deposit_1: u64 = 5000;
 
-        let wallet_pubkey_1 = create_wallet(
+        let (wallet_pubkey_1, _wallet_utxo_1) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id_1, &pq_key_1, initial_deposit_1,
         );
@@ -1052,7 +1055,7 @@ mod quip_tests {
         let (pq_key_2, _) = generate_wots_keypair(200);
         let initial_deposit_2: u64 = 8000;
 
-        let wallet_pubkey_2 = create_wallet(
+        let (wallet_pubkey_2, _wallet_utxo_2) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id_2, &pq_key_2, initial_deposit_2,
         );
@@ -1451,7 +1454,7 @@ mod quip_tests {
         // Create wallet first time
         let vault_id = [47u8; 32];
         let (pq_key, _) = generate_wots_keypair(47);
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 1000,
         );
@@ -1541,7 +1544,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(1);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &owner_keypair, owner_pubkey,
             vault_id, &pq_key, initial_deposit,
         );
@@ -1621,7 +1624,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(5);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &owner_keypair, owner_pubkey,
             vault_id, &pq_key, 10000,
         );
@@ -1697,7 +1700,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(10);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &owner_keypair, owner_pubkey,
             vault_id, &pq_key, 5000,
         );
@@ -1987,7 +1990,7 @@ mod quip_tests {
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
         let initial_deposit: u64 = 100; // Very small deposit
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, initial_deposit,
         );
@@ -2028,7 +2031,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(8);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 10000,
         );
@@ -2106,7 +2109,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(80);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 10000,
         );
@@ -2323,7 +2326,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(83);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 10000,
         );
@@ -2399,7 +2402,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(9);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 5000,
         );
@@ -2466,7 +2469,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(10);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 5000,
         );
@@ -2591,7 +2594,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(12);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 5000,
         );
@@ -2661,7 +2664,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(13);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 5000,
         );
@@ -2736,7 +2739,7 @@ mod quip_tests {
         let vault_id = [11u8; 32];
         let (pq_key, _) = generate_wots_keypair(11);
 
-        let _wallet_pubkey = create_wallet(
+        let (_wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 5000,
         );
@@ -2792,7 +2795,7 @@ mod quip_tests {
         let vault_id = [12u8; 32];
         let (pq_key, _) = generate_wots_keypair(12);
 
-        let _wallet_pubkey = create_wallet(
+        let (_wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 5000,
         );
@@ -2831,7 +2834,7 @@ mod quip_tests {
         let vault_id = [13u8; 32];
         let (pq_key, _) = generate_wots_keypair(13);
 
-        let _wallet_pubkey = create_wallet(
+        let (_wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 1000,
         );
@@ -2905,7 +2908,7 @@ mod quip_tests {
         let vault_id = [14u8; 32];
         let (pq_key, _) = generate_wots_keypair(14);
 
-        let _wallet_pubkey = create_wallet(
+        let (_wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 5000,
         );
@@ -2957,7 +2960,7 @@ mod quip_tests {
         let vault_id = [15u8; 32];
         let (pq_key, _) = generate_wots_keypair(15);
 
-        let _wallet_pubkey = create_wallet(
+        let (_wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 5000,
         );
@@ -3010,7 +3013,7 @@ mod quip_tests {
         let vault_id = [16u8; 32];
         let (pq_key, _) = generate_wots_keypair(16);
 
-        let _wallet_pubkey = create_wallet(
+        let (_wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 5000,
         );
@@ -3095,7 +3098,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(30);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, initial_deposit,
         );
@@ -3117,11 +3120,12 @@ mod quip_tests {
             &payer_keypair, payer_pubkey,
             vault_id, &pq_key, &pq_next, &private_key,
             transfer_amount, recipient_script_pubkey, fee_tx,
+            &wallet_utxo,
         );
 
         assert!(status == Status::Processed, "BTC transfer tx should succeed");
 
-        // Verify lamport fee was collected from wallet to factory
+        // Verify lamport fee was collected from owner to factory
         let wallet_balance_after = ctx.client.read_account_info(wallet_pubkey).unwrap().lamports;
         let factory_balance_after = ctx.client.read_account_info(factory_pubkey).unwrap().lamports;
         let owner_balance_after = ctx.client.read_account_info(payer_pubkey).unwrap().lamports;
@@ -3130,9 +3134,9 @@ mod quip_tests {
         let factory_balance_increase = factory_balance_after - factory_balance_before;
         let owner_balance_decrease = owner_balance_before - owner_balance_after;
 
-        assert_eq!(wallet_balance_decrease, transfer_fee, "Wallet should have been debited exactly transfer_fee");
+        assert_eq!(wallet_balance_decrease, 0, "Wallet balance should be unchanged");
         assert_eq!(factory_balance_increase, transfer_fee, "Factory should have received exactly transfer_fee");
-        assert!(owner_balance_decrease > 0, "Owner should have paid Arch tx fees");
+        assert!(owner_balance_decrease >= transfer_fee, "Owner should have paid transfer_fee + Arch tx fees");
 
         // Verify factory accumulated_fees
         let factory_account = ctx.client.read_account_info(factory_pubkey).unwrap();
@@ -3174,7 +3178,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(40);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 10000,
         );
@@ -3196,18 +3200,19 @@ mod quip_tests {
             &payer_keypair, payer_pubkey,
             vault_id, &pq_key, &pq_next, &private_key,
             transfer_amount, recipient_script_pubkey, fee_tx,
+            &wallet_utxo,
         );
 
         assert!(status == Status::Processed, "BTC max-spend tx should succeed");
 
-        // Verify lamport fee was collected
+        // Verify lamport fee was collected from owner
         let wallet_balance_after = ctx.client.read_account_info(wallet_pubkey).unwrap().lamports;
         let factory_balance_after = ctx.client.read_account_info(factory_pubkey).unwrap().lamports;
         let owner_balance_after = ctx.client.read_account_info(payer_pubkey).unwrap().lamports;
 
-        assert_eq!(wallet_balance_before - wallet_balance_after, transfer_fee);
+        assert_eq!(wallet_balance_before - wallet_balance_after, 0, "Wallet balance should be unchanged");
         assert_eq!(factory_balance_after - factory_balance_before, transfer_fee);
-        assert!(owner_balance_before - owner_balance_after > 0, "Owner should have paid Arch tx fees");
+        assert!(owner_balance_before - owner_balance_after >= transfer_fee, "Owner should have paid transfer_fee + Arch tx fees");
 
         // Check Bitcoin transaction acceptance
         if let Some(ref btc_txid_hash) = bitcoin_txid {
@@ -3243,7 +3248,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(50);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 10000,
         );
@@ -3262,6 +3267,7 @@ mod quip_tests {
             amount: 1500,
             recipient_script_pubkey,
             fee_tx,
+            source_utxo: wallet_utxo,
             signature: WinternitzSignature { signature_data: invalid_signature },
         }).unwrap();
 
@@ -3317,7 +3323,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(60);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 10000,
         );
@@ -3335,6 +3341,7 @@ mod quip_tests {
             &payer_keypair, payer_pubkey,
             vault_id, &pq_key, &pq_next, &private_key,
             transfer_amount, recipient_script_pubkey, fee_tx,
+            &wallet_utxo,
         );
 
         assert_error(&status, QuipError::InsufficientBtcBalance);
@@ -3365,7 +3372,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(70);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 10000,
         );
@@ -3378,7 +3385,7 @@ mod quip_tests {
         let transfer_amount: u64 = 1500;
         let recipient_script_pubkey = create_p2wpkh_script(&[0xEEu8; 20]);
 
-        let message = create_btc_transfer_message(&pq_key, &pq_next, &recipient_script_pubkey, transfer_amount);
+        let message = create_btc_transfer_message(&pq_key, &pq_next, &recipient_script_pubkey, transfer_amount, &wallet_utxo);
         let signature_data = sign_message(&private_key, &message);
 
         let instruction_data = borsh::to_vec(&QuipInstruction::BtcTransferWithWinternitz {
@@ -3387,6 +3394,7 @@ mod quip_tests {
             amount: transfer_amount,
             recipient_script_pubkey,
             fee_tx,
+            source_utxo: wallet_utxo,
             signature: WinternitzSignature { signature_data },
         }).unwrap();
 
@@ -3418,9 +3426,318 @@ mod quip_tests {
         let txid = ctx.client.send_transaction(tx).unwrap();
         let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
 
-        assert_error(&processed_tx.status, QuipError::UnauthorizedSigner);
+        // PDA derivation check catches the unauthorized caller (attacker's pubkey
+        // doesn't match the wallet owner used in PDA derivation)
+        assert_error(&processed_tx.status, QuipError::InvalidAccountDerivation);
 
         println!("\n=== Test PASSED: BTC Transfer Unauthorized ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_btc_transfer_non_anchor_utxo_full_spend() {
+        println!("\n=== Test: BTC Transfer Non-Anchor UTXO Full Spend ===\n");
+
+        let ctx = TestContext::new();
+        let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
+
+        let transfer_fee: u64 = 500;
+        let factory_pubkey = initialize_factory(
+            &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
+            1000, transfer_fee, 750,
+        );
+
+        let vault_id = [25u8; 32];
+        let (pq_key, private_key) = generate_wots_keypair(80);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
+
+        // Create wallet with anchor UTXO
+        let (wallet_pubkey, _anchor_utxo) = create_wallet(
+            &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
+            vault_id, &pq_key, 10000,
+        );
+
+        // Send a second UTXO to the wallet (non-anchor) and wait for Titan to index it
+        let (non_anchor_txid, non_anchor_vout) = ctx.helper
+            .send_utxo(wallet_pubkey)
+            .expect("Failed to send non-anchor UTXO");
+        let non_anchor_utxo = UtxoMeta::from(
+            hex::decode(&non_anchor_txid).unwrap().try_into().unwrap(),
+            non_anchor_vout,
+        );
+        println!("Non-anchor UTXO sent: {}:{}", non_anchor_txid, non_anchor_vout);
+
+        // Wait for Titan to index the non-anchor UTXO
+        let mut non_anchor_txid_bytes: [u8; 32] = hex::decode(&non_anchor_txid).unwrap().try_into().unwrap();
+        non_anchor_txid_bytes.reverse();
+        let non_anchor_bitcoin_txid = arch_program::bitcoin::Txid::from_byte_array(non_anchor_txid_bytes);
+        ctx.helper.wait_until_titan_indexes_transaction(&non_anchor_bitcoin_txid)
+            .expect("Failed to wait for non-anchor UTXO indexing");
+        println!("Non-anchor UTXO indexed by Titan");
+
+        // Anchor owner and prepare fee tx
+        anchor_account(&ctx, &payer_keypair, payer_pubkey);
+        let fee_tx = prepare_fees_and_wait(&ctx.helper);
+
+        let wallet_balance_before = ctx.client.read_account_info(wallet_pubkey).unwrap().lamports;
+        let factory_balance_before = ctx.client.read_account_info(factory_pubkey).unwrap().lamports;
+        let owner_balance_before = ctx.client.read_account_info(payer_pubkey).unwrap().lamports;
+
+        // Full spend of non-anchor UTXO (3000 sats, change = 0)
+        let transfer_amount: u64 = 3000;
+        let recipient_script_pubkey = create_p2wpkh_script(&[0xF0u8; 20]);
+
+        let (status, bitcoin_txid) = execute_btc_transfer_raw(
+            &ctx, program_pubkey, factory_pubkey, wallet_pubkey,
+            &payer_keypair, payer_pubkey,
+            vault_id, &pq_key, &pq_next, &private_key,
+            transfer_amount, recipient_script_pubkey, fee_tx,
+            &non_anchor_utxo,
+        );
+
+        assert!(status == Status::Processed, "Non-anchor full spend should succeed");
+
+        // Verify lamport fee was collected from owner
+        let wallet_balance_after = ctx.client.read_account_info(wallet_pubkey).unwrap().lamports;
+        let factory_balance_after = ctx.client.read_account_info(factory_pubkey).unwrap().lamports;
+        let owner_balance_after = ctx.client.read_account_info(payer_pubkey).unwrap().lamports;
+
+        // Verify lamport fees
+        assert_eq!(wallet_balance_before - wallet_balance_after, 0, "Wallet balance should be unchanged");
+        assert_eq!(factory_balance_after - factory_balance_before, transfer_fee);
+        assert!(owner_balance_before - owner_balance_after >= transfer_fee, "Owner should have paid transfer_fee + Arch tx fees");
+
+        // Verify wallet state updated
+        verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_next, 1);
+
+        // Check Bitcoin transaction acceptance
+        if let Some(ref btc_txid_hash) = bitcoin_txid {
+            let raw_txid: arch_program::bitcoin::Txid = btc_txid_hash.into();
+            let mut bytes = raw_txid.to_byte_array();
+            bytes.reverse();
+            let btc_txid = arch_program::bitcoin::Txid::from_byte_array(bytes);
+            ctx.helper.wait_until_titan_indexes_transaction(&btc_txid)
+                .expect("Bitcoin transaction must be accepted for full spend");
+        }
+
+        println!("\n=== Test PASSED: BTC Transfer Non-Anchor UTXO Full Spend ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_btc_transfer_non_anchor_utxo_with_change() {
+        println!("\n=== Test: BTC Transfer Non-Anchor UTXO With Change ===\n");
+
+        let ctx = TestContext::new();
+        let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
+
+        let transfer_fee: u64 = 500;
+        let factory_pubkey = initialize_factory(
+            &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
+            1000, transfer_fee, 750,
+        );
+
+        let vault_id = [26u8; 32];
+        let (pq_key, private_key) = generate_wots_keypair(90);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
+
+        // Create wallet with anchor UTXO
+        let (wallet_pubkey, _anchor_utxo) = create_wallet(
+            &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
+            vault_id, &pq_key, 10000,
+        );
+
+        // Send a second UTXO to the wallet (non-anchor) and wait for Titan to index it
+        let (non_anchor_txid, non_anchor_vout) = ctx.helper
+            .send_utxo(wallet_pubkey)
+            .expect("Failed to send non-anchor UTXO");
+        let non_anchor_utxo = UtxoMeta::from(
+            hex::decode(&non_anchor_txid).unwrap().try_into().unwrap(),
+            non_anchor_vout,
+        );
+        println!("Non-anchor UTXO sent: {}:{}", non_anchor_txid, non_anchor_vout);
+
+        // Wait for Titan to index the non-anchor UTXO
+        let mut non_anchor_txid_bytes: [u8; 32] = hex::decode(&non_anchor_txid).unwrap().try_into().unwrap();
+        non_anchor_txid_bytes.reverse();
+        let non_anchor_bitcoin_txid = arch_program::bitcoin::Txid::from_byte_array(non_anchor_txid_bytes);
+        ctx.helper.wait_until_titan_indexes_transaction(&non_anchor_bitcoin_txid)
+            .expect("Failed to wait for non-anchor UTXO indexing");
+        println!("Non-anchor UTXO indexed by Titan");
+
+        // Anchor owner and prepare fee tx
+        anchor_account(&ctx, &payer_keypair, payer_pubkey);
+        let fee_tx = prepare_fees_and_wait(&ctx.helper);
+
+        let wallet_balance_before = ctx.client.read_account_info(wallet_pubkey).unwrap().lamports;
+        let factory_balance_before = ctx.client.read_account_info(factory_pubkey).unwrap().lamports;
+        let owner_balance_before = ctx.client.read_account_info(payer_pubkey).unwrap().lamports;
+
+        // Partial spend of non-anchor UTXO (3000 sats total, transfer 2000, change = 1000)
+        let transfer_amount: u64 = 2000;
+        let recipient_script_pubkey = create_p2wpkh_script(&[0xF1u8; 20]);
+
+        let (status, bitcoin_txid) = execute_btc_transfer_raw(
+            &ctx, program_pubkey, factory_pubkey, wallet_pubkey,
+            &payer_keypair, payer_pubkey,
+            vault_id, &pq_key, &pq_next, &private_key,
+            transfer_amount, recipient_script_pubkey.clone(), fee_tx,
+            &non_anchor_utxo,
+        );
+
+        assert!(status == Status::Processed, "Non-anchor with change should succeed");
+
+        // Verify lamport fee was collected from owner
+        let wallet_balance_after = ctx.client.read_account_info(wallet_pubkey).unwrap().lamports;
+        let factory_balance_after = ctx.client.read_account_info(factory_pubkey).unwrap().lamports;
+        let owner_balance_after = ctx.client.read_account_info(payer_pubkey).unwrap().lamports;
+
+        assert_eq!(wallet_balance_before - wallet_balance_after, 0, "Wallet balance should be unchanged");
+        assert_eq!(factory_balance_after - factory_balance_before, transfer_fee);
+        assert!(owner_balance_before - owner_balance_after >= transfer_fee, "Owner should have paid transfer_fee + Arch tx fees");
+
+        // Verify wallet state updated
+        verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_next, 1);
+
+        // Check Bitcoin transaction acceptance
+        if let Some(ref btc_txid_hash) = bitcoin_txid {
+            let raw_txid: arch_program::bitcoin::Txid = btc_txid_hash.into();
+            let mut bytes = raw_txid.to_byte_array();
+            bytes.reverse();
+            let btc_txid = arch_program::bitcoin::Txid::from_byte_array(bytes);
+            ctx.helper.wait_until_titan_indexes_transaction(&btc_txid)
+                .expect("Bitcoin transaction must be accepted");
+            println!("RESULT: Bitcoin transaction ACCEPTED - {}", btc_txid);
+        } else {
+            panic!("Bitcoin transaction should have been created");
+        }
+
+        println!("\n=== Test PASSED: BTC Transfer Non-Anchor UTXO With Change ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_btc_transfer_utxo_not_owned_by_wallet() {
+        println!("\n=== Test: BTC Transfer UTXO Not Owned By Wallet ===\n");
+
+        let ctx = TestContext::new();
+        let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
+
+        let factory_pubkey = initialize_factory(
+            &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
+            1000, 500, 750,
+        );
+
+        let vault_id = [26u8; 32];
+        let (pq_key, private_key) = generate_wots_keypair(90);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
+
+        // Create wallet
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
+            &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
+            vault_id, &pq_key, 10000,
+        );
+
+        // Create a different account and send a UTXO to it
+        let (other_keypair, other_pubkey, _) = generate_new_keypair(ctx.config.network);
+        ctx.client.create_and_fund_account_with_faucet(&other_keypair).unwrap();
+        let (other_txid, other_vout) = ctx.helper
+            .send_utxo(other_pubkey)
+            .expect("Failed to send UTXO to other account");
+        let other_utxo = UtxoMeta::from(
+            hex::decode(&other_txid).unwrap().try_into().unwrap(),
+            other_vout,
+        );
+
+        // Anchor owner and prepare fee tx
+        anchor_account(&ctx, &payer_keypair, payer_pubkey);
+        let fee_tx = prepare_fees_and_wait(&ctx.helper);
+
+        // Attempt BTC transfer with UTXO that belongs to other_pubkey (not wallet)
+        let transfer_amount: u64 = 1500;
+        let recipient_script_pubkey = create_p2wpkh_script(&[0xF1u8; 20]);
+
+        let (status, _) = execute_btc_transfer_raw(
+            &ctx, program_pubkey, factory_pubkey, wallet_pubkey,
+            &payer_keypair, payer_pubkey,
+            vault_id, &pq_key, &pq_next, &private_key,
+            transfer_amount, recipient_script_pubkey, fee_tx,
+            &other_utxo,
+        );
+
+        assert_error(&status, QuipError::UtxoNotOwnedByWallet);
+
+        println!("\n=== Test PASSED: BTC Transfer UTXO Not Owned By Wallet ===\n");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_btc_transfer_non_anchor_dust_change() {
+        println!("\n=== Test: BTC Transfer Non-Anchor Dust Change ===\n");
+
+        let ctx = TestContext::new();
+        let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+        let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
+
+        let factory_pubkey = initialize_factory(
+            &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
+            1000, 500, 750,
+        );
+
+        let vault_id = [27u8; 32];
+        let (pq_key, private_key) = generate_wots_keypair(100);
+        let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
+
+        // Create wallet with anchor UTXO
+        let (wallet_pubkey, _anchor_utxo) = create_wallet(
+            &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
+            vault_id, &pq_key, 10000,
+        );
+
+        // Send a second UTXO to the wallet (non-anchor) and wait for Titan to index it
+        let (non_anchor_txid, non_anchor_vout) = ctx.helper
+            .send_utxo(wallet_pubkey)
+            .expect("Failed to send non-anchor UTXO");
+        let non_anchor_utxo = UtxoMeta::from(
+            hex::decode(&non_anchor_txid).unwrap().try_into().unwrap(),
+            non_anchor_vout,
+        );
+
+        // Wait for Titan to index the non-anchor UTXO
+        let mut non_anchor_txid_bytes: [u8; 32] = hex::decode(&non_anchor_txid).unwrap().try_into().unwrap();
+        non_anchor_txid_bytes.reverse();
+        let non_anchor_bitcoin_txid = arch_program::bitcoin::Txid::from_byte_array(non_anchor_txid_bytes);
+        ctx.helper.wait_until_titan_indexes_transaction(&non_anchor_bitcoin_txid)
+            .expect("Failed to wait for non-anchor UTXO indexing");
+        println!("Non-anchor UTXO indexed by Titan");
+
+        // Anchor owner and prepare fee tx
+        anchor_account(&ctx, &payer_keypair, payer_pubkey);
+        let fee_tx = prepare_fees_and_wait(&ctx.helper);
+
+        // Attempt transfer leaving change > 0 but < 330 sats (dust limit)
+        // UTXO is 3000 sats, transfer 2800 leaves 200 sats change (dust)
+        let transfer_amount: u64 = 2800;
+        let recipient_script_pubkey = create_p2wpkh_script(&[0xF2u8; 20]);
+
+        let (status, _) = execute_btc_transfer_raw(
+            &ctx, program_pubkey, factory_pubkey, wallet_pubkey,
+            &payer_keypair, payer_pubkey,
+            vault_id, &pq_key, &pq_next, &private_key,
+            transfer_amount, recipient_script_pubkey, fee_tx,
+            &non_anchor_utxo,
+        );
+
+        assert_error(&status, QuipError::ChangeBelowDustLimit);
+
+        println!("\n=== Test PASSED: BTC Transfer Non-Anchor Dust Change ===\n");
     }
 
     // =============================================================================
@@ -3530,7 +3847,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(100);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, initial_deposit,
         );
@@ -3626,7 +3943,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(200);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 10_000,
         );
@@ -3869,7 +4186,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(500);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, 10_000,
         );
@@ -3954,7 +4271,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(600);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id_1, &pq_key, 10_000,
         );
@@ -4212,7 +4529,7 @@ mod quip_tests {
         let (pq_key, private_key) = generate_wots_keypair(700);
         let pq_next = derive_wots_pubkey_at_index(&private_key, 1);
 
-        let wallet_pubkey = create_wallet(
+        let (wallet_pubkey, _wallet_utxo) = create_wallet(
             &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
             vault_id, &pq_key, initial_deposit,
         );
