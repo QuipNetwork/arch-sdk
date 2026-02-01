@@ -253,6 +253,15 @@ fn process_deposit_to_winternitz<'a>(
     let _ = crate::utils::verify_factory_address(program_id, &pubkey_to_bytes(factory_info.key))?;
     let wallet_bump = crate::utils::verify_wallet_address(program_id, &owner, &vault_id, &pubkey_to_bytes(wallet_info.key))?;
 
+    // Load factory early for balance check
+    let mut factory: QuipFactory = load_state(factory_info)?;
+
+    // Pre-check owner balance for creation fee + deposit (fail-fast)
+    let total_required = factory.creation_fee
+        .checked_add(deposit)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    crate::utils::check_sufficient_balance(owner_info, total_required)?;
+
     // Create wallet PDA account (will fail if wallet already exists via system program CPI)
     let wallet_seeds: &[&[u8]] = &[b"wallet", owner.as_ref(), vault_id.as_ref(), &[wallet_bump]];
     crate::utils::create_pda_account(
@@ -263,10 +272,6 @@ fn process_deposit_to_winternitz<'a>(
         &wallet_utxo,
         wallet_seeds,
     )?;
-
-
-    // Load factory
-    let mut factory: QuipFactory = load_state(factory_info)?;
 
     // Transfer creation fee from owner to factory
     crate::utils::transfer_value_from_signer(owner_info, factory_info, factory.creation_fee)?;
@@ -707,10 +712,10 @@ fn process_btc_transfer_with_winternitz<'a>(
 
     // Validate inputs
     if amount == 0 {
-        return Err(ProgramError::InvalidArgument);
+        return Err(QuipError::ZeroAmountTransfer.into());
     }
     if recipient_script_pubkey.is_empty() {
-        return Err(ProgramError::InvalidArgument);
+        return Err(QuipError::EmptyRecipientScript.into());
     }
 
     // Validate UTXO ownership - the source UTXO must belong to the wallet
@@ -747,7 +752,7 @@ fn process_btc_transfer_with_winternitz<'a>(
     // Anchor UTXO: must keep >= dust limit (cannot close account)
     let anchor_insufficient = is_anchor_utxo && change < BTC_DUST_LIMIT;
     if anchor_insufficient {
-        return Err(QuipError::InsufficientBtcBalance.into());
+        return Err(QuipError::AnchorChangeBelowDustLimit.into());
     }
 
     // Non-anchor UTXO: full spend OK (change=0), otherwise change >= dust limit
