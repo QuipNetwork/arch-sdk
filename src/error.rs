@@ -85,6 +85,12 @@ pub enum QuipError {
 
     #[error("Invalid account derivation")]
     InvalidAccountDerivation,
+
+    #[error("Account not owned by program")]
+    IncorrectProgramOwner,
+
+    #[error("Account not writable")]
+    AccountNotWritable,
 }
 
 impl From<QuipError> for ProgramError {

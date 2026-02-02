@@ -47,6 +47,8 @@ pub enum QuipInstruction {
         to: [u8; 32],
         pq_to: WinternitzPublicKey,
         initial_deposit: u64,
+        /// Bitcoin transaction for anchoring state transition
+        tx_hex: Vec<u8>,
     },
 
     /// Transfer funds using WOTS+ signature
@@ -62,6 +64,8 @@ pub enum QuipInstruction {
         vault_id: [u8; 32],
         pq_next: WinternitzPublicKey,
         amount: u64,
+        /// Bitcoin transaction for anchoring state transition
+        tx_hex: Vec<u8>,
     },
 
     /// Execute arbitrary CPI using WOTS+ signature
@@ -79,6 +83,8 @@ pub enum QuipInstruction {
         pq_next: WinternitzPublicKey,
         vault_id: [u8; 32],
         account_metas: Vec<CpiAccountMeta>,
+        /// Bitcoin transaction for anchoring state transition
+        tx_hex: Vec<u8>,
     },
 
     /// Change the post-quantum owner (rotate WOTS+ key)

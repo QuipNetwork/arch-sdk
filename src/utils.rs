@@ -15,7 +15,17 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use arch_program::{account::AccountInfo, program_error::ProgramError, pubkey::Pubkey};
+use arch_program::{
+    account::AccountInfo,
+    bitcoin::{self, absolute::LockTime, transaction::Version, Transaction},
+    helper::add_state_transition,
+    input_to_sign::InputToSign,
+    program::{invoke_signed, set_transaction_to_sign},
+    program_error::ProgramError,
+    pubkey::Pubkey,
+    system_instruction,
+    system_program,
+};
 #[cfg(feature = "debug")]
 use arch_program::msg;
 use hashsigs::{PublicKey, WOTSPlus};
@@ -24,121 +34,113 @@ use crate::error::QuipError;
 use crate::state::{CpiAccountMeta, WinternitzPublicKey, WinternitzSignature};
 
 // =============================================================================
-// Address Derivation
+// PDA Address Derivation
 // =============================================================================
 
-/// Derive the factory address from seeds
-/// In ArchVM, we use deterministic hashing instead of Solana's PDA mechanism
-pub fn derive_factory_address(program_id: &Pubkey) -> [u8; 32] {
-    let mut data = Vec::new();
-    data.extend_from_slice(b"factory");
-    data.extend_from_slice(program_id.as_ref());
-    keccak256_hash(&data)
+/// Derive factory PDA address using Arch's native PDA mechanism
+/// Returns (pubkey_bytes, bump)
+pub fn derive_factory_address(program_id: &Pubkey) -> ([u8; 32], u8) {
+    let (pda, bump) = Pubkey::find_program_address(&[b"factory"], program_id);
+    (pda.serialize(), bump)
 }
 
-/// Derive a wallet address from owner and vault_id
+/// Derive wallet PDA address using Arch's native PDA mechanism
+/// Returns (pubkey_bytes, bump)
 pub fn derive_wallet_address(
     program_id: &Pubkey,
     owner: &[u8; 32],
     vault_id: &[u8; 32],
-) -> [u8; 32] {
-    let mut data = Vec::new();
-    data.extend_from_slice(b"wallet");
-    data.extend_from_slice(owner);
-    data.extend_from_slice(vault_id);
-    data.extend_from_slice(program_id.as_ref());
-    keccak256_hash(&data)
+) -> ([u8; 32], u8) {
+    let (pda, bump) = Pubkey::find_program_address(
+        &[b"wallet", owner.as_ref(), vault_id.as_ref()],
+        program_id,
+    );
+    (pda.serialize(), bump)
 }
 
-/// Derive signature storage address
-pub fn derive_signature_storage_address(program_id: &Pubkey, owner: &[u8; 32]) -> [u8; 32] {
-    let mut data = Vec::new();
-    data.extend_from_slice(b"signature");
-    data.extend_from_slice(owner);
-    data.extend_from_slice(program_id.as_ref());
-    keccak256_hash(&data)
+/// Derive signature storage PDA address
+/// Returns (pubkey_bytes, bump)
+pub fn derive_signature_storage_address(program_id: &Pubkey, owner: &[u8; 32]) -> ([u8; 32], u8) {
+    let (pda, bump) = Pubkey::find_program_address(
+        &[b"signature", owner.as_ref()],
+        program_id,
+    );
+    (pda.serialize(), bump)
 }
 
-/// Derive opdata storage address
-pub fn derive_opdata_storage_address(program_id: &Pubkey, owner: &[u8; 32]) -> [u8; 32] {
-    let mut data = Vec::new();
-    data.extend_from_slice(b"opdata");
-    data.extend_from_slice(owner);
-    data.extend_from_slice(program_id.as_ref());
-    keccak256_hash(&data)
+/// Derive opdata storage PDA address
+/// Returns (pubkey_bytes, bump)
+pub fn derive_opdata_storage_address(program_id: &Pubkey, owner: &[u8; 32]) -> ([u8; 32], u8) {
+    let (pda, bump) = Pubkey::find_program_address(
+        &[b"opdata", owner.as_ref()],
+        program_id,
+    );
+    (pda.serialize(), bump)
 }
 
 // =============================================================================
 // Account Derivation Verification
 // =============================================================================
 
-/// Verify that an account key matches the expected factory address
+/// Verify that an account key matches the expected factory address and return bump
 pub fn verify_factory_address(
     program_id: &Pubkey,
     account_key: &[u8; 32],
-) -> Result<(), ProgramError> {
-    let expected = derive_factory_address(program_id);
+) -> Result<u8, ProgramError> {
+    let (expected, bump) = derive_factory_address(program_id);
     if *account_key != expected {
         return Err(QuipError::InvalidAccountDerivation.into());
     }
-    Ok(())
+    Ok(bump)
 }
 
-/// Verify that an account key matches the expected wallet address
+/// Verify that an account key matches the expected wallet address and return bump
 pub fn verify_wallet_address(
     program_id: &Pubkey,
     owner: &[u8; 32],
     vault_id: &[u8; 32],
     account_key: &[u8; 32],
-) -> Result<(), ProgramError> {
-    let expected = derive_wallet_address(program_id, owner, vault_id);
+) -> Result<u8, ProgramError> {
+    let (expected, bump) = derive_wallet_address(program_id, owner, vault_id);
     if *account_key != expected {
         return Err(QuipError::InvalidAccountDerivation.into());
     }
-    Ok(())
+    Ok(bump)
 }
 
-/// Verify that an account key matches the expected signature storage address
+/// Verify that an account key matches the expected signature storage address and return bump
 pub fn verify_signature_storage_address(
     program_id: &Pubkey,
     owner: &[u8; 32],
     account_key: &[u8; 32],
-) -> Result<(), ProgramError> {
-    let expected = derive_signature_storage_address(program_id, owner);
+) -> Result<u8, ProgramError> {
+    let (expected, bump) = derive_signature_storage_address(program_id, owner);
     if *account_key != expected {
         return Err(QuipError::InvalidAccountDerivation.into());
     }
-    Ok(())
+    Ok(bump)
 }
 
-/// Verify that an account key matches the expected opdata storage address
+/// Verify that an account key matches the expected opdata storage address and return bump
 pub fn verify_opdata_storage_address(
     program_id: &Pubkey,
     owner: &[u8; 32],
     account_key: &[u8; 32],
-) -> Result<(), ProgramError> {
-    let expected = derive_opdata_storage_address(program_id, owner);
+) -> Result<u8, ProgramError> {
+    let (expected, bump) = derive_opdata_storage_address(program_id, owner);
     if *account_key != expected {
         return Err(QuipError::InvalidAccountDerivation.into());
     }
-    Ok(())
+    Ok(bump)
 }
 
 // =============================================================================
-// Keccak256 Hash Function
+// Keccak256 Hash Function (for WOTS+ signatures)
 // =============================================================================
 
-/// Compute Keccak256 hash using hashsigs' implementation
+/// Compute Keccak256 hash for WOTS+ signature verification
 fn keccak256_hash(data: &[u8]) -> [u8; 32] {
-    use sha3::{Digest, Keccak256};
-    let mut hasher = Keccak256::new();
-    hasher.update(data);
-    hasher.finalize().into()
-}
-
-/// Generate a vault ID from a seed string
-pub fn generate_vault_id(seed: &str) -> [u8; 32] {
-    keccak256_hash(seed.as_bytes())
+    arch_program::hashing_functions::keccak256(data).0
 }
 
 // =============================================================================
@@ -274,34 +276,156 @@ pub fn create_change_owner_message(
 }
 
 // =============================================================================
-// Value Transfer
+// Value Transfer (Lamports/ARCH tokens)
 // =============================================================================
 
-/// Transfer value (satoshis) from one account to another
-/// 
-/// In ArchVM, value transfer is accomplished via the UTXO model at the
-/// transaction level, not within program execution. The program's role is to
-/// authorize the transfer through signature verification (which we do via WOTS+).
-/// 
-/// The actual Bitcoin UTXO manipulation is handled by the ArchVM runtime
-/// based on the transaction inputs/outputs, not by the program directly.
-/// 
-/// This function validates the transfer authorization has been properly verified
-/// and logs the intended transfer. The ArchVM runtime handles the actual
-/// satoshi movement based on the transaction structure.
-pub fn transfer_value(
-    _from: &AccountInfo,
-    _to: &AccountInfo,
-    _amount: u64,
+/// Transfer lamports (ARCH tokens) from a PDA to another account.
+///
+/// This function transfers the native ARCH token (lamports) between accounts
+/// using the system program. Since the source account is typically a PDA
+/// (like a QuipWallet or QuipFactory), this uses `invoke_signed` with the PDA's seeds.
+///
+/// ## Parameters
+///
+/// - `from`: Source account (must be a PDA owned by this program)
+/// - `to`: Destination account
+/// - `amount`: Amount of lamports to transfer
+/// - `signer_seeds`: Seeds used to derive the PDA (for signing)
+///
+/// ## Returns
+///
+/// Returns `Ok(())` on successful transfer, or a `ProgramError` if the
+/// transfer fails (e.g., insufficient funds, invalid accounts).
+pub fn transfer_value<'a>(
+    from: &AccountInfo<'a>,
+    to: &AccountInfo<'a>,
+    amount: u64,
+    signer_seeds: &[&[u8]],
 ) -> Result<(), ProgramError> {
-    // In ArchVM's UTXO model, value transfers are specified in the transaction
-    // inputs and outputs, not manipulated directly by the program.
-    // 
-    // The program's job is to:
-    // 1. Verify the WOTS+ signature authorizes this transfer (done before calling this)
-    // 2. Update program state to reflect the transfer (done in the caller)
-    // 
-    // The ArchVM runtime handles the actual Bitcoin UTXO manipulation.
-    // This is a no-op because the authorization is already verified.
+    // Skip zero-amount transfers
+    if amount == 0 {
+        return Ok(());
+    }
+
+    // Create the system instruction for transferring lamports
+    let ix = system_instruction::transfer(from.key, to.key, amount);
+
+    // Execute the transfer using invoke_signed since 'from' is a PDA
+    invoke_signed(&ix, &[from.clone(), to.clone()], &[signer_seeds])
+}
+
+/// Transfer lamports (ARCH tokens) from a signer account to another account.
+///
+/// This function is used when the source account is a regular signer (not a PDA),
+/// such as when a user pays the wallet creation fee during deposit.
+///
+/// ## Parameters
+///
+/// - `from`: Source account (must be a signer)
+/// - `to`: Destination account
+/// - `amount`: Amount of lamports to transfer
+///
+/// ## Returns
+///
+/// Returns `Ok(())` on successful transfer, or a `ProgramError` if the
+/// transfer fails (e.g., insufficient funds, invalid accounts).
+pub fn transfer_value_from_signer<'a>(
+    from: &AccountInfo<'a>,
+    to: &AccountInfo<'a>,
+    amount: u64,
+) -> Result<(), ProgramError> {
+    use arch_program::program::invoke;
+
+    // Skip zero-amount transfers
+    if amount == 0 {
+        return Ok(());
+    }
+
+    // Create the system instruction for transferring lamports
+    let ix = system_instruction::transfer(from.key, to.key, amount);
+
+    // Execute the transfer using invoke since 'from' is a signer
+    invoke(&ix, &[from.clone(), to.clone()])
+}
+
+// =============================================================================
+// System Program Verification
+// =============================================================================
+
+/// Verify that the provided account is the system program
+pub fn verify_system_program(account: &AccountInfo) -> Result<(), ProgramError> {
+    if account.key != &system_program::SYSTEM_PROGRAM_ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
     Ok(())
+}
+
+// =============================================================================
+// Balance Checks
+// =============================================================================
+
+/// Check if an account has sufficient balance for an operation
+pub fn check_sufficient_balance(
+    account: &AccountInfo,
+    required_amount: u64,
+) -> Result<(), ProgramError> {
+    if account.lamports() < required_amount {
+        return Err(QuipError::InsufficientWalletBalance.into());
+    }
+    Ok(())
+}
+
+// =============================================================================
+// Bitcoin Transaction Anchoring
+// =============================================================================
+
+/// Anchor a state transition to a Bitcoin transaction
+///
+/// This creates a cryptographic link between program state and a Bitcoin transaction,
+/// ensuring all state transitions are anchored to and signed by Bitcoin UTXOs.
+///
+/// ## Parameters
+///
+/// - `accounts`: All accounts passed to the instruction (needed for set_transaction_to_sign)
+/// - `state_account`: The account whose state is being anchored
+/// - `tx_hex`: Raw Bitcoin transaction bytes for fee input
+///
+/// ## Returns
+///
+/// Returns `Ok(())` on successful anchoring, or a `ProgramError` if the
+/// transaction is invalid or signing fails.
+pub fn anchor_state_transition<'a>(
+    accounts: &'a [AccountInfo<'a>],
+    state_account: &AccountInfo<'a>,
+    tx_hex: &[u8],
+) -> Result<(), ProgramError> {
+    // Deserialize the Bitcoin transaction from raw bytes
+    let fees_tx: Transaction = bitcoin::consensus::deserialize(tx_hex)
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
+
+    // Create new transaction for state anchoring
+    let mut tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![],
+        output: vec![],
+    };
+
+    // Embed account state into Bitcoin tx (creates cryptographic link)
+    add_state_transition(&mut tx, state_account)
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+
+    // Add fee input from provided transaction
+    if fees_tx.input.is_empty() {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    tx.input.push(fees_tx.input[0].clone());
+
+    // Queue for signing - the state account must sign this input
+    let inputs = [InputToSign {
+        index: 0,
+        signer: *state_account.key,
+    }];
+
+    set_transaction_to_sign(accounts, &tx, &inputs)
 }
