@@ -34,3 +34,6 @@ pub mod utils;
 pub use error::QuipError;
 pub use instruction::QuipInstruction;
 pub use state::*;
+
+#[cfg(test)]
+mod tests;

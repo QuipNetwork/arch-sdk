@@ -5,9 +5,10 @@ A quantum-resistant wallet system on ArchVM (Bitcoin) using WOTS+ signatures for
 ## Features
 
 - **Quantum-Resistant Security**: WOTS+ signatures with Keccak256 hashing
-- **Factory Pattern**: Centralized wallet creation and fee management  
-- **Deterministic Addresses**: Derived from program ID and seeds
+- **Factory Pattern**: Centralized wallet creation and fee management
+- **Deterministic Addresses**: PDA wallets derived from program ID, owner, and vault ID
 - **Cross-Program Invocation**: Execute arbitrary instructions on behalf of wallets
+- **Bitcoin Settlement**: Accounts anchored to Bitcoin UTXOs via Arch Network
 
 ## Quick Start
 
@@ -16,27 +17,30 @@ A quantum-resistant wallet system on ArchVM (Bitcoin) using WOTS+ signatures for
 git clone <repository-url>
 cd quip-arch
 
-# Build
-cargo build
+# Build for sBPF target (ArchVM)
+cargo build-sbpf
 
-# Run tests
-cargo test --features no-entrypoint
+# Run tests (requires local Arch node and Bitcoin regtest)
+cargo test --features "test no-entrypoint" -- --ignored --nocapture --test-threads=1
 ```
 
 ## Development Commands
 
 ```bash
-# Build program
-cargo build
+# Build for sBPF target (deployable program)
+cargo build-sbpf
 
-# Release build
-cargo build --release
+# Build native (for IDE support)
+cargo build
 
 # Build with debug logging
 cargo build --features debug
 
-# Run tests (disable entrypoint for native testing)
-cargo test --features no-entrypoint
+# Run all integration tests
+cargo test --features "test no-entrypoint" -- --ignored --nocapture --test-threads=1
+
+# Run a specific test
+cargo test --features "test no-entrypoint" -- --ignored --nocapture test_transfer_success
 
 # Linting and formatting
 cargo fmt           # Format Rust code
@@ -46,32 +50,41 @@ cargo clippy        # Run linter
 ## Prerequisites
 
 - [Rust](https://rustup.rs/) 1.75+
-- ArchVM toolchain
+- ArchVM toolchain (`cargo build-sbpf`)
+- Local Arch node (for testing)
+- Bitcoin regtest node (for testing)
 
 ## Architecture
 
 ### Core Instructions
 
-- `initialize_factory` - Set up global factory configuration
-- `deposit_to_winternitz` - Create quantum-resistant wallet with initial deposit
-- `transfer_with_winternitz` - Transfer funds using WOTS+ signature
-- `execute_with_winternitz` - Execute arbitrary CPI with WOTS+ auth
-- `change_pq_owner` - Rotate WOTS+ key
-- `store_signature` / `store_opdata` - Chunked data upload for large signatures
-- `update_fees` / `withdraw_fees` / `transfer_ownership` - Admin management
+- `InitializeFactory` - Set up global factory configuration with admin and fees
+- `DepositToWinternitz` - Create quantum-resistant wallet or top up existing wallet
+- `TransferWithWinternitz` - Transfer funds using WOTS+ signature
+- `ExecuteWithWinternitz` - Execute arbitrary CPI with WOTS+ authorization
+- `ChangePqOwner` - Rotate WOTS+ key without transferring funds
+- `UpdateFees` - Admin: update factory fee structure
+- `WithdrawFees` - Admin: withdraw accumulated fees
+- `TransferOwnership` - Admin: transfer factory ownership
 
 ### Account Structure
 
-- **Factory Account**: Global configuration derived from `[b"factory", program_id]`
-- **Wallet Accounts**: Individual wallets derived from `[b"wallet", owner, vault_id, program_id]`
-- **Signature Storage**: Temporary storage derived from `[b"signature", owner, program_id]`
-- **Opdata Storage**: Temporary storage derived from `[b"opdata", owner, program_id]`
+- **Factory Account**: Global singleton derived from `[b"factory"]`
+- **Wallet Accounts**: Per-user wallets derived from `[b"wallet", owner, vault_id]`
+
+### Data Sizes
+
+- **QuipFactory**: 74 bytes (admin, fees, counters, bump)
+- **QuipWallet**: 154 bytes (owner, pq_owner, timestamps, transaction count, bump)
+- **WinternitzPublicKey**: 64 bytes (public_seed + public_key_hash)
+- **WinternitzSignature**: ~2144 bytes (67 chunks of 32 bytes)
 
 ## Important Notes
 
-- **WOTS+ Keys are ONE-TIME USE** - must rotate after each transaction
-- Uses Keccak256 (SHA-3) for quantum resistance
-- Value transfers in ArchVM happen via UTXO model at transaction level; program authorizes via signature verification
+- **WOTS+ Keys are ONE-TIME USE** - each transaction rotates to a new `pq_next` key
+- Uses Keccak256 for hash-based signatures (quantum-resistant)
+- Transfers from PDAs with data use direct lamport manipulation (system program limitation)
+- Compute budget of 1.4M units required for WOTS+ signature verification
 
 ## License
 

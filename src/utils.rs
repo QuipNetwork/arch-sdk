@@ -17,10 +17,7 @@
 
 use arch_program::{
     account::AccountInfo,
-    bitcoin::{self, absolute::LockTime, transaction::Version, Transaction},
-    helper::add_state_transition,
-    input_to_sign::InputToSign,
-    program::{invoke_signed, set_transaction_to_sign},
+    program::invoke_signed,
     program_error::ProgramError,
     pubkey::Pubkey,
     system_instruction,
@@ -58,26 +55,6 @@ pub fn derive_wallet_address(
     (pda.serialize(), bump)
 }
 
-/// Derive signature storage PDA address
-/// Returns (pubkey_bytes, bump)
-pub fn derive_signature_storage_address(program_id: &Pubkey, owner: &[u8; 32]) -> ([u8; 32], u8) {
-    let (pda, bump) = Pubkey::find_program_address(
-        &[b"signature", owner.as_ref()],
-        program_id,
-    );
-    (pda.serialize(), bump)
-}
-
-/// Derive opdata storage PDA address
-/// Returns (pubkey_bytes, bump)
-pub fn derive_opdata_storage_address(program_id: &Pubkey, owner: &[u8; 32]) -> ([u8; 32], u8) {
-    let (pda, bump) = Pubkey::find_program_address(
-        &[b"opdata", owner.as_ref()],
-        program_id,
-    );
-    (pda.serialize(), bump)
-}
-
 // =============================================================================
 // Account Derivation Verification
 // =============================================================================
@@ -102,32 +79,6 @@ pub fn verify_wallet_address(
     account_key: &[u8; 32],
 ) -> Result<u8, ProgramError> {
     let (expected, bump) = derive_wallet_address(program_id, owner, vault_id);
-    if *account_key != expected {
-        return Err(QuipError::InvalidAccountDerivation.into());
-    }
-    Ok(bump)
-}
-
-/// Verify that an account key matches the expected signature storage address and return bump
-pub fn verify_signature_storage_address(
-    program_id: &Pubkey,
-    owner: &[u8; 32],
-    account_key: &[u8; 32],
-) -> Result<u8, ProgramError> {
-    let (expected, bump) = derive_signature_storage_address(program_id, owner);
-    if *account_key != expected {
-        return Err(QuipError::InvalidAccountDerivation.into());
-    }
-    Ok(bump)
-}
-
-/// Verify that an account key matches the expected opdata storage address and return bump
-pub fn verify_opdata_storage_address(
-    program_id: &Pubkey,
-    owner: &[u8; 32],
-    account_key: &[u8; 32],
-) -> Result<u8, ProgramError> {
-    let (expected, bump) = derive_opdata_storage_address(program_id, owner);
     if *account_key != expected {
         return Err(QuipError::InvalidAccountDerivation.into());
     }
@@ -282,36 +233,45 @@ pub fn create_change_owner_message(
 /// Transfer lamports (ARCH tokens) from a PDA to another account.
 ///
 /// This function transfers the native ARCH token (lamports) between accounts
-/// using the system program. Since the source account is typically a PDA
-/// (like a QuipWallet or QuipFactory), this uses `invoke_signed` with the PDA's seeds.
+/// by directly manipulating lamport balances. This approach is required because
+/// the system program's transfer instruction does not allow transfers FROM accounts
+/// that have data (like our wallet/factory PDAs).
+///
+/// The system program can only transfer from accounts it owns. Once an account
+/// stores custom data, its ownership transfers to the program, and the System
+/// Program cannot transfer SOL from accounts it doesn't own.
 ///
 /// ## Parameters
 ///
 /// - `from`: Source account (must be a PDA owned by this program)
 /// - `to`: Destination account
 /// - `amount`: Amount of lamports to transfer
-/// - `signer_seeds`: Seeds used to derive the PDA (for signing)
 ///
 /// ## Returns
 ///
 /// Returns `Ok(())` on successful transfer, or a `ProgramError` if the
-/// transfer fails (e.g., insufficient funds, invalid accounts).
+/// transfer fails (e.g., insufficient funds).
 pub fn transfer_value<'a>(
     from: &AccountInfo<'a>,
     to: &AccountInfo<'a>,
     amount: u64,
-    signer_seeds: &[&[u8]],
 ) -> Result<(), ProgramError> {
     // Skip zero-amount transfers
     if amount == 0 {
         return Ok(());
     }
 
-    // Create the system instruction for transferring lamports
-    let ix = system_instruction::transfer(from.key, to.key, amount);
+    // Verify sufficient balance
+    if from.lamports() < amount {
+        return Err(ProgramError::InsufficientFunds);
+    }
 
-    // Execute the transfer using invoke_signed since 'from' is a PDA
-    invoke_signed(&ix, &[from.clone(), to.clone()], &[signer_seeds])
+    // Direct lamport manipulation - required for PDAs with data
+    // (system_instruction::transfer fails with "invalid program argument")
+    **from.try_borrow_mut_lamports()? -= amount;
+    **to.try_borrow_mut_lamports()? += amount;
+
+    Ok(())
 }
 
 /// Transfer lamports (ARCH tokens) from a signer account to another account.
@@ -361,6 +321,51 @@ pub fn verify_system_program(account: &AccountInfo) -> Result<(), ProgramError> 
 }
 
 // =============================================================================
+// PDA Account Creation
+// =============================================================================
+
+/// Create a PDA account using Arch Network's anchoring mechanism.
+///
+/// This function creates a new PDA account by anchoring it to a Bitcoin UTXO.
+/// The account will be owned by the specified program after creation.
+///
+/// ## Parameters
+///
+/// - `payer`: Account paying for the creation (must be signer)
+/// - `pda_account`: The PDA account to create
+/// - `space`: Size of the account data in bytes
+/// - `owner_program`: The program that will own this account
+/// - `utxo`: The Bitcoin UTXO to anchor the account creation to
+/// - `signer_seeds`: Seeds for signing the creation (including bump)
+///
+/// ## Returns
+///
+/// Returns `Ok(())` on success, or a `ProgramError` if creation fails.
+pub fn create_pda_account<'a>(
+    payer: &AccountInfo<'a>,
+    pda_account: &AccountInfo<'a>,
+    space: usize,
+    owner_program: &Pubkey,
+    utxo: &arch_program::utxo::UtxoMeta,
+    signer_seeds: &[&[u8]],
+) -> Result<(), ProgramError> {
+    use arch_program::system_instruction::create_account_with_anchor;
+    use arch_program::rent::minimum_rent;
+
+    let ix = create_account_with_anchor(
+        payer.key,
+        pda_account.key,
+        minimum_rent(space),
+        space as u64,
+        owner_program,
+        utxo.txid().try_into().map_err(|_| ProgramError::InvalidInstructionData)?,
+        utxo.vout(),
+    );
+
+    invoke_signed(&ix, &[pda_account.clone(), payer.clone()], &[signer_seeds])
+}
+
+// =============================================================================
 // Balance Checks
 // =============================================================================
 
@@ -375,57 +380,3 @@ pub fn check_sufficient_balance(
     Ok(())
 }
 
-// =============================================================================
-// Bitcoin Transaction Anchoring
-// =============================================================================
-
-/// Anchor a state transition to a Bitcoin transaction
-///
-/// This creates a cryptographic link between program state and a Bitcoin transaction,
-/// ensuring all state transitions are anchored to and signed by Bitcoin UTXOs.
-///
-/// ## Parameters
-///
-/// - `accounts`: All accounts passed to the instruction (needed for set_transaction_to_sign)
-/// - `state_account`: The account whose state is being anchored
-/// - `tx_hex`: Raw Bitcoin transaction bytes for fee input
-///
-/// ## Returns
-///
-/// Returns `Ok(())` on successful anchoring, or a `ProgramError` if the
-/// transaction is invalid or signing fails.
-pub fn anchor_state_transition<'a>(
-    accounts: &'a [AccountInfo<'a>],
-    state_account: &AccountInfo<'a>,
-    tx_hex: &[u8],
-) -> Result<(), ProgramError> {
-    // Deserialize the Bitcoin transaction from raw bytes
-    let fees_tx: Transaction = bitcoin::consensus::deserialize(tx_hex)
-        .map_err(|_| ProgramError::InvalidInstructionData)?;
-
-    // Create new transaction for state anchoring
-    let mut tx = Transaction {
-        version: Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![],
-        output: vec![],
-    };
-
-    // Embed account state into Bitcoin tx (creates cryptographic link)
-    add_state_transition(&mut tx, state_account)
-        .map_err(|_| ProgramError::InvalidAccountData)?;
-
-    // Add fee input from provided transaction
-    if fees_tx.input.is_empty() {
-        return Err(ProgramError::InvalidInstructionData);
-    }
-    tx.input.push(fees_tx.input[0].clone());
-
-    // Queue for signing - the state account must sign this input
-    let inputs = [InputToSign {
-        index: 0,
-        signer: *state_account.key,
-    }];
-
-    set_transaction_to_sign(accounts, &tx, &inputs)
-}
