@@ -73,6 +73,24 @@ pub enum QuipError {
 
     #[error("Account not writable")]
     AccountNotWritable,
+
+    #[error("Insufficient BTC balance in wallet UTXO")]
+    InsufficientBtcBalance,
+
+    #[error("UTXO is not owned by wallet account")]
+    UtxoNotOwnedByWallet,
+
+    #[error("Change amount is below dust limit (must be >= 330 sats or 0)")]
+    ChangeBelowDustLimit,
+
+    #[error("Anchor UTXO change would be below dust limit (must maintain >= 330 sats)")]
+    AnchorChangeBelowDustLimit,
+
+    #[error("Transfer amount must be greater than zero")]
+    ZeroAmountTransfer,
+
+    #[error("Recipient script pubkey cannot be empty")]
+    EmptyRecipientScript,
 }
 
 impl From<QuipError> for ProgramError {

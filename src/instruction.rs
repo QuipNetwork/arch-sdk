@@ -37,19 +37,17 @@ pub enum QuipInstruction {
         factory_utxo: UtxoMeta,
     },
 
-    /// Create a new wallet with WOTS+ key and initial deposit
+    /// Create a new wallet with WOTS+ key and optional deposit
     ///
     /// Accounts:
     /// 0. `[writable]` Factory
     /// 1. `[writable]` Wallet account (to be created)
-    /// 2. `[]` Owner
-    /// 3. `[signer, writable]` Payer
-    /// 4. `[]` System program
+    /// 2. `[signer, writable]` Owner (pays for creation and deposit)
+    /// 3. `[]` System program
     DepositToWinternitz {
         vault_id: [u8; 32],
-        to: [u8; 32],
-        pq_to: WinternitzPublicKey,
-        initial_deposit: u64,
+        pq_owner: WinternitzPublicKey,
+        deposit: u64,
         /// UTXO for anchoring wallet account creation
         wallet_utxo: UtxoMeta,
     },
@@ -60,8 +58,7 @@ pub enum QuipInstruction {
     /// 0. `[writable]` Factory
     /// 1. `[writable]` Wallet
     /// 2. `[writable]` Recipient
-    /// 3. `[signer, writable]` Payer (must be wallet owner)
-    /// 4. `[]` System program
+    /// 3. `[signer, writable]` Owner (must be wallet owner)
     TransferWithWinternitz {
         vault_id: [u8; 32],
         pq_next: WinternitzPublicKey,
@@ -76,9 +73,8 @@ pub enum QuipInstruction {
     /// 0. `[writable]` Factory
     /// 1. `[writable]` Wallet
     /// 2. `[]` Target program
-    /// 3. `[signer, writable]` Payer (must be wallet owner)
-    /// 4. `[]` System program
-    /// 5+ `[]` Remaining accounts for CPI
+    /// 3. `[signer, writable]` Owner (must be wallet owner)
+    /// 4+ `[]` Remaining accounts for CPI
     ExecuteWithWinternitz {
         pq_next: WinternitzPublicKey,
         vault_id: [u8; 32],
@@ -130,5 +126,37 @@ pub enum QuipInstruction {
     /// 1. `[signer]` Current admin
     TransferOwnership {
         new_admin: [u8; 32],
+    },
+
+    /// Transfer BTC (satoshis) on the Bitcoin network using WOTS+ signature
+    ///
+    /// Builds a Bitcoin transaction that spends the specified UTXO,
+    /// sends `amount` satoshis to `recipient_script_pubkey`, and returns
+    /// change to the wallet (if any). The Arch validator network threshold-signs
+    /// the transaction. Charges `transfer_fee` in lamports.
+    ///
+    /// Change handling:
+    /// - If change > 0: Must be >= BTC_DUST_LIMIT (330 sats)
+    /// - Anchor UTXO: Cannot have zero change (would close the account)
+    /// - Non-anchor UTXO: Can have zero change (full spend allowed)
+    ///
+    /// Accounts:
+    /// 0. `[writable]` Factory
+    /// 1. `[writable]` Wallet
+    /// 2. `[signer, writable]` Payer (must be wallet owner)
+    /// 3. `[]` System program
+    BtcTransferWithWinternitz {
+        vault_id: [u8; 32],
+        pq_next: WinternitzPublicKey,
+        /// Satoshis to send to recipient
+        amount: u64,
+        /// Recipient's Bitcoin script_pubkey (supports any address type)
+        recipient_script_pubkey: Vec<u8>,
+        /// Serialized Bitcoin transaction providing the fee input
+        fee_tx: Vec<u8>,
+        /// Which UTXO to spend (must be owned by wallet)
+        source_utxo: UtxoMeta,
+        /// WOTS+ signature
+        signature: WinternitzSignature,
     },
 }

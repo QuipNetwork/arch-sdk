@@ -25,10 +25,11 @@ use arch_program::{
 };
 #[cfg(feature = "debug")]
 use arch_program::msg;
+use borsh::{BorshDeserialize, BorshSerialize};
 use hashsigs::{PublicKey, WOTSPlus};
 
 use crate::error::QuipError;
-use crate::state::{CpiAccountMeta, WinternitzPublicKey, WinternitzSignature};
+use crate::state::{CpiAccountMeta, QuipFactory, WinternitzPublicKey, WinternitzSignature};
 
 // =============================================================================
 // PDA Address Derivation
@@ -226,6 +227,28 @@ pub fn create_change_owner_message(
     message
 }
 
+/// Create a message for BTC transfer operations
+/// Message format: current_key || next_key || len(script_pubkey) as u32 LE || script_pubkey || amount || source_utxo_txid || source_utxo_vout
+pub fn create_btc_transfer_message(
+    current_key: &WinternitzPublicKey,
+    next_key: &WinternitzPublicKey,
+    recipient_script_pubkey: &[u8],
+    amount: u64,
+    source_utxo: &arch_program::utxo::UtxoMeta,
+) -> Vec<u8> {
+    let mut message = Vec::new();
+    message.extend_from_slice(&current_key.public_seed);
+    message.extend_from_slice(&current_key.public_key_hash);
+    message.extend_from_slice(&next_key.public_seed);
+    message.extend_from_slice(&next_key.public_key_hash);
+    message.extend_from_slice(&(recipient_script_pubkey.len() as u32).to_le_bytes());
+    message.extend_from_slice(recipient_script_pubkey);
+    message.extend_from_slice(&amount.to_le_bytes());
+    message.extend_from_slice(source_utxo.txid()); // 32 bytes
+    message.extend_from_slice(&source_utxo.vout().to_le_bytes()); // 4 bytes
+    message
+}
+
 // =============================================================================
 // Value Transfer (Lamports/ARCH tokens)
 // =============================================================================
@@ -376,6 +399,58 @@ pub fn check_sufficient_balance(
 ) -> Result<(), ProgramError> {
     if account.lamports() < required_amount {
         return Err(QuipError::InsufficientWalletBalance.into());
+    }
+    Ok(())
+}
+
+// =============================================================================
+// Account Validation Helpers
+// =============================================================================
+
+/// Require that an account is a signer
+pub fn require_signer(account: &AccountInfo) -> Result<(), ProgramError> {
+    if !account.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    Ok(())
+}
+
+/// Require that the given admin key matches the factory's admin
+pub fn require_admin(factory: &QuipFactory, admin_key: &[u8; 32]) -> Result<(), ProgramError> {
+    if factory.admin != *admin_key {
+        return Err(QuipError::UnauthorizedSigner.into());
+    }
+    Ok(())
+}
+
+// =============================================================================
+// State Serialization Helpers
+// =============================================================================
+
+/// Load and deserialize state from an account
+pub fn load_state<T: BorshDeserialize>(account: &AccountInfo) -> Result<T, ProgramError> {
+    T::try_from_slice(&account.data.borrow())
+        .map_err(|_| ProgramError::InvalidAccountData)
+}
+
+/// Serialize and save state to an account
+pub fn save_state<T: BorshSerialize>(state: &T, account: &AccountInfo) -> Result<(), ProgramError> {
+    state.serialize(&mut &mut account.data.borrow_mut()[..])
+        .map_err(|_| ProgramError::InvalidAccountData)
+}
+
+// =============================================================================
+// Signature Verification Helper
+// =============================================================================
+
+/// Verify a WOTS+ signature and return an error if invalid
+pub fn require_valid_signature(
+    public_key: &WinternitzPublicKey,
+    message: &[u8],
+    signature: &WinternitzSignature,
+) -> Result<(), ProgramError> {
+    if !verify_winternitz_signature(public_key, message, signature)? {
+        return Err(QuipError::InvalidWotsSignature.into());
     }
     Ok(())
 }

@@ -51,8 +51,6 @@ pub struct WinternitzSignature {
 /// Global factory configuration - singleton account
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug)]
 pub struct QuipFactory {
-    /// Whether this factory is initialized
-    pub is_initialized: bool,
     /// Factory administrator (32-byte pubkey)
     pub admin: [u8; 32],
     /// Fee for creating new wallets (in satoshis)
@@ -70,28 +68,33 @@ pub struct QuipFactory {
 }
 
 impl QuipFactory {
-    pub const SPACE: usize = 1 + // is_initialized
-        32 + // admin
+    pub const SPACE: usize = 32 + // admin
         8 + // creation_fee
         8 + // transfer_fee
         8 + // execute_fee
         8 + // total_wallets
         8 + // accumulated_fees
         1; // bump
-    // = 74 bytes (no discriminator in arch-program)
+    // = 73 bytes (no discriminator in arch-program)
+
+    /// Accumulate a fee into the factory's fee pool (saturating to prevent overflow)
+    pub fn accumulate_fee(&mut self, fee: u64) {
+        self.accumulated_fees = self.accumulated_fees.saturating_add(fee);
+    }
 }
 
 // =============================================================================
 // Wallet Account
 // =============================================================================
 
+/// Current wallet state version for migration support
+pub const VERSION: u8 = 1;
+
 /// Per-user Quip wallet with post-quantum security
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug)]
 pub struct QuipWallet {
-    /// Whether this wallet is initialized
-    pub is_initialized: bool,
-    /// Factory that created this wallet
-    pub factory: [u8; 32],
+    /// Wallet state version for migration support
+    pub version: u8,
     /// Classical key owner
     pub owner: [u8; 32],
     /// Current WOTS+ public key (post-quantum owner)
@@ -107,15 +110,25 @@ pub struct QuipWallet {
 }
 
 impl QuipWallet {
-    pub const SPACE: usize = 1 + // is_initialized
-        32 + // factory
-        32 + // owner
-        64 + // pq_owner (WinternitzPublicKey)
-        8 + // created_at
-        8 + // last_activity
-        8 + // transaction_count
-        1; // bump
-    // = 154 bytes
+    pub const SPACE: usize =
+        32 +  // owner
+        64 +  // pq_owner (WinternitzPublicKey)
+        8 +   // created_at
+        8 +   // last_activity
+        8 +   // transaction_count
+        1 +   // bump
+        1;    // version
+    // = 122 bytes
+
+    /// Rotate the WOTS+ key after a transaction (key can only be used once)
+    pub fn rotate_key(&mut self, new_pq_owner: WinternitzPublicKey) {
+        self.pq_owner = new_pq_owner;
+    }
+
+    /// Increment transaction count (saturating to prevent overflow)
+    pub fn increment_transaction_count(&mut self) {
+        self.transaction_count = self.transaction_count.saturating_add(1);
+    }
 }
 
 // =============================================================================
