@@ -1,1 +1,8 @@
-/target
+target
+
+# Testnet keys - NEVER commit
+keys/
+*.json.bak
+
+# macOS
+.DS_Store
