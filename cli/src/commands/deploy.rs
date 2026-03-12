@@ -15,32 +15,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Testnet deployment script for quip-arch program.
-//!
-//! This script deploys the quip-arch program to Arch Network testnet and
-//! initializes the factory with configurable fees.
-//!
-//! Usage:
-//! ```bash
-//! # Testnet deployment (uses null UTXO, no Bitcoin wallet access needed):
-//! cargo run --release -- \
-//!     --bitcoin-rpc-url "http://bitcoin-rpc.test.arch.network:80" \
-//!     --arch-rpc-url "https://rpc.testnet.arch.network" \
-//!     --titan-url "https://titan-public-http.test.arch.network" \
-//!     --deployer-keypair ../keys/testnet_deployer.json
-//!
-//! # Localnet deployment (uses BitcoinHelper::send_utxo):
-//! cargo run --release -- --localnet
-//!
-//! # Print factory PDA for a given program ID:
-//! cargo run --release -- --print-factory-address <PROGRAM_ID_HEX>
-//!
-//! # Initialize factory only (skip deploy, for re-running init after prior deploy):
-//! cargo run --release -- --init-only --program-id <HEX> \
-//!     --arch-rpc-url ... --titan-url ... --bitcoin-rpc-url ...
-//! ```
-
-mod btc_helper;
+//! Deploy quip-arch program to Arch Network and initialize factory.
 
 use anyhow::{Context, Result};
 use arch_program::{
@@ -56,22 +31,22 @@ use arch_sdk::{
     ArchRpcClient, BitcoinHelper, Config, ProgramDeployer, Status,
 };
 use arch_sdk::arch_program::bitcoin::key::UntweakedKeypair;
-use clap::Parser;
+use clap::Args as ClapArgs;
 use std::path::PathBuf;
 
 use quip_arch::instruction::QuipInstruction;
 use quip_arch::utils::derive_factory_address;
 
-/// Path to the compiled program ELF (relative to scripts/ directory)
-const ELF_PATH: &str = "../target/sbpf-solana-solana/release/quip_arch.so";
+use crate::btc_helper;
+use crate::common::{load_keypair, parse_network, parse_program_id, pubkey_to_base58};
 
-/// Testnet deployment script for quip-arch program
-#[derive(Parser, Debug)]
-#[command(name = "quip-deploy")]
-#[command(about = "Deploy quip-arch program to Arch Network testnet")]
-struct Args {
+/// Path to the compiled program ELF (relative to project root)
+const ELF_PATH: &str = "target/sbpf-solana-solana/release/quip_arch.so";
+
+#[derive(ClapArgs, Debug)]
+pub struct Args {
     /// Path to the deployer keypair JSON file (becomes the factory admin)
-    #[arg(long, default_value = "../keys/testnet_deployer.json")]
+    #[arg(long, default_value = "keys/testnet_deployer.json")]
     deployer_keypair: PathBuf,
 
     /// Wallet creation fee in lamports
@@ -110,10 +85,9 @@ struct Args {
     #[arg(long, env = "TITAN_URL")]
     titan_url: Option<String>,
 
-    /// Use localnet configuration (for testing).
-    /// On localnet, send_utxo is used to create real Bitcoin UTXOs via the local node.
-    #[arg(long)]
-    localnet: bool,
+    /// Bitcoin network (testnet4, bitcoin, regtest)
+    #[arg(long, default_value = "testnet4")]
+    network: String,
 
     /// Print the factory PDA address for a given program ID and exit
     #[arg(long)]
@@ -127,130 +101,65 @@ struct Args {
     #[arg(long)]
     program_id: Option<String>,
 
-    /// Manually specify a factory UTXO as txid:vout (bypasses send_utxo).
-    /// The txid should be in standard hex (big-endian, as shown on block explorers).
+    /// Manually specify a factory UTXO as txid:vout (bypasses send_utxo)
     #[arg(long)]
     factory_utxo: Option<String>,
 }
 
-/// Base58 alphabet (Bitcoin/Solana style)
-const BASE58_ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-/// Encode bytes to base58 string
-fn base58_encode(bytes: &[u8]) -> String {
-    if bytes.is_empty() {
-        return String::new();
-    }
-
-    // Count leading zeros
-    let zeros = bytes.iter().take_while(|&&b| b == 0).count();
-
-    // Convert to base58
-    let mut digits: Vec<u8> = Vec::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
-        let mut carry = byte as u32;
-        for digit in digits.iter_mut() {
-            carry += (*digit as u32) << 8;
-            *digit = (carry % 58) as u8;
-            carry /= 58;
-        }
-        while carry > 0 {
-            digits.push((carry % 58) as u8);
-            carry /= 58;
-        }
-    }
-
-    // Build result string
-    let mut result = String::with_capacity(zeros + digits.len());
-    for _ in 0..zeros {
-        result.push('1');
-    }
-    for digit in digits.iter().rev() {
-        result.push(BASE58_ALPHABET[*digit as usize] as char);
-    }
-    result
+struct DeploymentResult {
+    factory_pubkey: Pubkey,
+    factory_utxo_txid: String,
+    factory_utxo_vout: u32,
 }
 
-/// Convert Pubkey to base58 string
-fn pubkey_to_base58(pubkey: &Pubkey) -> String {
-    base58_encode(&pubkey.serialize())
-}
-
-/// Load a keypair from a JSON file (arch-cli format)
-fn load_keypair(path: &PathBuf) -> Result<UntweakedKeypair> {
-    let json_str = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read keypair file: {}", path.display()))?;
-
-    // arch-cli saves keypairs as a JSON array of bytes
-    let bytes: Vec<u8> = serde_json::from_str(&json_str)
-        .with_context(|| "Failed to parse keypair JSON")?;
-
-    // Support both formats:
-    // - 32 bytes: arch-cli format (secret key only)
-    // - 64 bytes: Solana format (secret key + public key)
-    let secret_bytes: [u8; 32] = match bytes.len() {
-        32 => bytes.try_into().expect("checked length is 32"),
-        64 => bytes[..32].try_into().expect("slice is 32 bytes"),
-        n => anyhow::bail!("Invalid keypair length: expected 32 or 64 bytes, got {}", n),
-    };
-
-    let keypair = UntweakedKeypair::from_seckey_slice(&arch_program::bitcoin::secp256k1::Secp256k1::new(), &secret_bytes)
-        .with_context(|| "Failed to create keypair from secret key")?;
-
-    Ok(keypair)
-}
-
-/// Create configuration based on CLI args
 fn create_config(args: &Args) -> Result<Config> {
-    if args.localnet {
+    let network = parse_network(&args.network)?;
+
+    // Regtest uses localnet defaults
+    if network == bitcoin::Network::Regtest {
         let mut config = Config::localnet();
-        config.titan_url = "http://127.0.0.1:8080".to_string();
+        config.titan_url = args.titan_url.clone()
+            .unwrap_or_else(|| "http://127.0.0.1:8080".to_string());
         return Ok(config);
     }
 
-    // Testnet configuration - requires user to provide endpoints
     let bitcoin_rpc_url = args.bitcoin_rpc_url.clone()
         .ok_or_else(|| anyhow::anyhow!(
-            "Bitcoin RPC URL required for testnet. Set --bitcoin-rpc-url or BTC_RPC_URL env var"
+            "Bitcoin RPC URL required. Set --bitcoin-rpc-url or BTC_RPC_URL env var"
         ))?;
 
     let arch_rpc_url = args.arch_rpc_url.clone()
         .ok_or_else(|| anyhow::anyhow!(
-            "Arch RPC URL required for testnet. Set --arch-rpc-url or ARCH_RPC_URL env var"
+            "Arch RPC URL required. Set --arch-rpc-url or ARCH_RPC_URL env var"
         ))?;
 
     let titan_url = args.titan_url.clone()
         .ok_or_else(|| anyhow::anyhow!(
-            "Titan URL required for testnet. Set --titan-url or TITAN_URL env var"
+            "Titan URL required. Set --titan-url or TITAN_URL env var"
         ))?;
 
     Ok(Config {
         node_endpoint: bitcoin_rpc_url,
         node_username: args.bitcoin_rpc_user.clone(),
         node_password: args.bitcoin_rpc_pass.clone(),
-        network: arch_program::bitcoin::Network::Testnet4,
+        network,
         arch_node_url: arch_rpc_url,
         titan_url,
     })
 }
 
-/// Deploy the program and return the program pubkey
 fn deploy_program(
     config: &Config,
-    client: &ArchRpcClient,
+    _client: &ArchRpcClient,
     authority_keypair: UntweakedKeypair,
     elf_path: &PathBuf,
 ) -> Result<Pubkey> {
     println!("Deploying program...");
 
-    // Generate a new keypair for the program account
     let (program_keypair, _, _) = generate_new_keypair(config.network);
 
-    // Skip SDK faucet - fund manually with: arch-cli account airdrop --pubkey <PUBKEY> --amount 1000000000
-    // The SDK's create_and_fund_account_with_faucet requires 1B lamports which exceeds faucet limits.
     println!("Skipping SDK faucet (fund manually with arch-cli if needed)...");
 
-    // Deploy the program
     let deployer = ProgramDeployer::new(config);
     let elf_path_str = elf_path.to_string_lossy().to_string();
     let program_pubkey = deployer
@@ -266,9 +175,6 @@ fn deploy_program(
     Ok(program_pubkey)
 }
 
-/// Parse a manual UTXO string in "txid:vout" format.
-/// The txid is expected in big-endian hex (as shown on block explorers).
-/// UtxoMeta::from stores txid in big-endian (display order) — no reversal needed.
 fn parse_manual_utxo(utxo_str: &str) -> Result<UtxoMeta> {
     let parts: Vec<&str> = utxo_str.split(':').collect();
     if parts.len() != 2 {
@@ -288,19 +194,11 @@ fn parse_manual_utxo(utxo_str: &str) -> Result<UtxoMeta> {
     Ok(UtxoMeta::from(txid_bytes, vout))
 }
 
-/// Obtain the factory UTXO.
-///
-/// Priority:
-/// 1. --factory-utxo: use a manually specified UTXO directly.
-/// 2. Localnet: use `BitcoinHelper::send_utxo` (direct Bitcoin wallet access).
-/// 3. Testnet/mainnet: use `btc_helper::send_utxo` to build and broadcast a P2TR tx
-///    via mempool.space, sending 3000 sats to the factory's Arch-assigned address.
 fn get_factory_utxo(
     helper: &BitcoinHelper,
     keypair: &UntweakedKeypair,
     factory_pubkey: Pubkey,
     manual_utxo: Option<&str>,
-    localnet: bool,
     arch_rpc_url: &str,
     titan_url: &str,
     network: arch_program::bitcoin::Network,
@@ -309,8 +207,9 @@ fn get_factory_utxo(
         return parse_manual_utxo(utxo_str);
     }
 
-    if localnet {
-        println!("Sending UTXO to factory address (localnet)...");
+    // Regtest: use BitcoinHelper (direct RPC to local node)
+    if network == arch_program::bitcoin::Network::Regtest {
+        println!("Sending UTXO to factory address (regtest)...");
         let (factory_txid, factory_vout) = helper
             .send_utxo(factory_pubkey)
             .map_err(|e| anyhow::anyhow!("Failed to send UTXO for factory: {}", e))?;
@@ -324,11 +223,10 @@ fn get_factory_utxo(
         ));
     }
 
-    // Testnet/mainnet: build and broadcast P2TR tx via mempool.space
+    // Testnet/mainnet: use mempool.space API
     println!("Sending UTXO to factory address via mempool.space...");
     let (txid_hex, vout) = btc_helper::send_utxo(keypair, &factory_pubkey, arch_rpc_url, titan_url, network)?;
 
-    // txid from mempool.space is big-endian hex — same format UtxoMeta::from expects
     let txid_bytes: [u8; 32] = hex::decode(&txid_hex)
         .context("Failed to decode txid")?
         .try_into()
@@ -339,14 +237,6 @@ fn get_factory_utxo(
     Ok(UtxoMeta::from(txid_bytes, vout))
 }
 
-/// Deployment result containing all info needed for deployment.json
-struct DeploymentResult {
-    factory_pubkey: Pubkey,
-    factory_utxo_txid: String,
-    factory_utxo_vout: u32,
-}
-
-/// Initialize the factory with the given fees
 fn initialize_factory(
     config: &Config,
     client: &ArchRpcClient,
@@ -357,36 +247,29 @@ fn initialize_factory(
     transfer_fee: u64,
     execute_fee: u64,
     manual_utxo: Option<&str>,
-    localnet: bool,
 ) -> Result<DeploymentResult> {
     println!("Initializing factory...");
 
-    // Derive factory PDA address
     let (factory_bytes, _bump) = derive_factory_address(&program_pubkey);
     let factory_pubkey = Pubkey::from_slice(&factory_bytes);
 
-    // Get authority pubkey
     let authority_pubkey = Pubkey::from_slice(
         &authority_keypair.x_only_public_key().0.serialize()
     );
 
-    // Get UTXO for factory anchoring
     let factory_utxo = get_factory_utxo(
         helper,
         authority_keypair,
         factory_pubkey,
         manual_utxo,
-        localnet,
         &config.arch_node_url,
         &config.titan_url,
         config.network,
     )?;
 
-    // Capture UTXO info for deployment.json
     let factory_utxo_txid = hex::encode(factory_utxo.txid());
     let factory_utxo_vout = factory_utxo.vout();
 
-    // Build InitializeFactory instruction
     let instruction_data = borsh::to_vec(&QuipInstruction::InitializeFactory {
         admin: authority_pubkey.serialize(),
         creation_fee,
@@ -401,7 +284,6 @@ fn initialize_factory(
         AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
     ];
 
-    // Build and send transaction
     let recent_blockhash = client
         .get_best_finalized_block_hash()
         .context("Failed to get recent blockhash")?;
@@ -429,7 +311,6 @@ fn initialize_factory(
         .wait_for_processed_transaction(&txid)
         .context("Failed to wait for transaction")?;
 
-    // Print full transaction details for debugging
     println!("Transaction status: {:?}", processed_tx.status);
     if !processed_tx.logs.is_empty() {
         println!("Transaction logs:");
@@ -457,18 +338,7 @@ fn initialize_factory(
     })
 }
 
-/// Parse a hex program ID string into a Pubkey
-fn parse_program_id(hex_str: &str) -> Result<Pubkey> {
-    let bytes: [u8; 32] = hex::decode(hex_str)
-        .context("Invalid hex for program ID")?
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Program ID must be 32 bytes (64 hex chars)"))?;
-    Ok(Pubkey::from_slice(&bytes))
-}
-
-fn main() -> Result<()> {
-    let args = Args::parse();
-
+pub fn run(args: Args) -> Result<()> {
     // Handle --print-factory-address: derive and print, then exit
     if let Some(ref pid_hex) = args.print_factory_address {
         let program_pubkey = parse_program_id(pid_hex)?;
@@ -482,9 +352,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    println!("=== Quip-Arch Testnet Deployment ===\n");
+    println!("=== Quip-Arch Deployment ===\n");
 
-    // Load deployer keypair (will become the factory admin)
     println!("Loading deployer keypair from: {}", args.deployer_keypair.display());
     let deployer_keypair = load_keypair(&args.deployer_keypair)?;
 
@@ -493,18 +362,15 @@ fn main() -> Result<()> {
     );
     println!("Deployer pubkey: {}", pubkey_to_base58(&deployer_pubkey));
 
-    // Create configuration
     let config = create_config(&args)?;
     println!("Network: {:?}", config.network);
     println!("Arch RPC: {}", config.arch_node_url);
     println!("Titan URL: {}", config.titan_url);
     println!();
 
-    // Create clients
     let client = ArchRpcClient::new(&config);
     let helper = BitcoinHelper::new(&config);
 
-    // Determine program pubkey: either from --program-id or by deploying
     let program_pubkey = if args.init_only {
         let pid_hex = args.program_id.as_ref()
             .ok_or_else(|| anyhow::anyhow!("--init-only requires --program-id <hex>"))?;
@@ -512,7 +378,6 @@ fn main() -> Result<()> {
         println!("Using existing program: {}", pubkey_to_base58(&pubkey));
         pubkey
     } else {
-        // Verify ELF file exists
         if !args.elf_path.exists() {
             anyhow::bail!(
                 "Program ELF not found at: {}\nRun `cargo build-sbpf` first.",
@@ -520,7 +385,6 @@ fn main() -> Result<()> {
             );
         }
 
-        // Deploy program
         deploy_program(
             &config,
             &client,
@@ -529,7 +393,6 @@ fn main() -> Result<()> {
         )?
     };
 
-    // Initialize factory
     let deployment = initialize_factory(
         &config,
         &client,
@@ -540,7 +403,6 @@ fn main() -> Result<()> {
         args.transfer_fee,
         args.execute_fee,
         args.factory_utxo.as_deref(),
-        args.localnet,
     )?;
 
     let factory_pubkey = deployment.factory_pubkey;
@@ -569,7 +431,7 @@ fn main() -> Result<()> {
     });
 
     let network_name = format!("{:?}", config.network).to_lowercase();
-    let deployment_dir = std::path::PathBuf::from(format!("../deployments/{}", network_name));
+    let deployment_dir = std::path::PathBuf::from(format!("deployments/{}", network_name));
     std::fs::create_dir_all(&deployment_dir)
         .with_context(|| format!("Failed to create deployment directory: {}", deployment_dir.display()))?;
     let deployment_path = deployment_dir.join("deployment.json");
@@ -577,7 +439,6 @@ fn main() -> Result<()> {
         .with_context(|| format!("Failed to write deployment.json to {}", deployment_path.display()))?;
     println!("\nDeployment saved to: {}", deployment_path.display());
 
-    // Print deployment summary
     println!("\n=== Deployment Complete ===\n");
     println!("Program ID: {}", pubkey_to_base58(&program_pubkey));
     println!("Factory Address: {}", pubkey_to_base58(&factory_pubkey));

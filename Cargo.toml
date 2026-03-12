@@ -1,3 +1,7 @@
+[workspace]
+members = ["cli"]
+resolver = "2"
+
 [package]
 name = "quip-arch"
 version = "0.1.0"

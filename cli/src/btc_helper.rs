@@ -86,10 +86,8 @@ fn fetch_utxos(address: &str, network: Network) -> Result<Vec<Utxo>> {
 
 /// Get an Arch account's Bitcoin address via RPC get_account_address.
 fn get_account_btc_address(arch_rpc_url: &str, pubkey: &Pubkey, network: Network) -> Result<Address> {
-    // Build a minimal Config just to construct the RPC client
     let config = arch_sdk::Config {
         arch_node_url: arch_rpc_url.to_string(),
-        // These fields are unused for get_account_address
         node_endpoint: String::new(),
         node_username: String::new(),
         node_password: String::new(),
@@ -137,7 +135,6 @@ fn build_and_sign_p2tr_tx(
         ],
     };
 
-    // Prevout for sighash computation
     let prevout = TxOut {
         value: Amount::from_sat(utxo.value),
         script_pubkey: change_address.script_pubkey(),
@@ -214,11 +211,9 @@ pub fn send_utxo(
     let deployer_addr_str = change_addr.to_string();
     println!("Deployer BTC address: {}", deployer_addr_str);
 
-    // Fetch target account's BTC address from Arch RPC
     let target_addr = get_account_btc_address(arch_rpc_url, target_pubkey, network)?;
     println!("Target BTC address: {}", target_addr);
 
-    // Find the largest confirmed UTXO
     let utxos = fetch_utxos(&deployer_addr_str, network)?;
     let utxo = utxos
         .iter()
@@ -244,11 +239,9 @@ pub fn send_utxo(
     let txid = broadcast(&tx, network)?;
     println!("Broadcast txid: {}", txid);
 
-    // Wait for Titan to index the transaction
     println!("Waiting for Titan to index transaction...");
     wait_for_titan(titan_url, &txid)?;
     println!("Transaction indexed by Titan.");
 
-    // vout 0 is always the target output
     Ok((txid, 0))
 }
