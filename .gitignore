@@ -6,3 +6,7 @@ keys/
 
 # macOS
 .DS_Store
+
+# SDK build artifacts
+sdk/node_modules/
+sdk/dist/

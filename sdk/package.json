@@ -1,0 +1,57 @@
+{
+  "name": "@quip-network/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for interacting with quip-arch post-quantum wallets on Arch Network",
+  "author": "quip.network",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "package.json",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "lint": "tsc --noEmit",
+    "test": "vitest",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "@arch-network/arch-sdk": "0.0.26"
+  },
+  "dependencies": {
+    "borsh": "^2.0.0"
+  },
+  "devDependencies": {
+    "@arch-network/arch-sdk": "^0.0.26",
+    "@types/node": "^22.0.0",
+    "tsup": "^8.2.4",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  },
+  "keywords": [
+    "arch",
+    "arch-network",
+    "quip",
+    "post-quantum",
+    "wots",
+    "winternitz",
+    "bitcoin",
+    "typescript",
+    "sdk"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/quip-network/quip-arch"
+  }
+}
