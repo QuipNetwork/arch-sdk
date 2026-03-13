@@ -88,9 +88,8 @@ pub enum QuipInstruction {
     /// Change the post-quantum owner (rotate WOTS+ key)
     ///
     /// Accounts:
-    /// 0. `[writable]` Factory
-    /// 1. `[writable]` Wallet
-    /// 2. `[signer, writable]` Payer (must be wallet owner)
+    /// 0. `[writable]` Wallet
+    /// 1. `[signer, writable]` Payer (must be wallet owner)
     ChangePqOwner {
         vault_id: [u8; 32],
         pq_next: WinternitzPublicKey,
