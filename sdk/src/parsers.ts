@@ -20,9 +20,9 @@ const FACTORY_SIZE = 73
  * @throws InvalidAccountDataError if data is malformed
  */
 export function parseWalletAccount(data: Uint8Array): QuipWallet {
-  if (data.length < WALLET_SIZE) {
+  if (data.length !== WALLET_SIZE) {
     throw new InvalidAccountDataError(
-      `Wallet data too short: ${data.length} < ${WALLET_SIZE}`
+      `Wallet data size mismatch: expected ${WALLET_SIZE}, got ${data.length}`
     )
   }
 
@@ -43,9 +43,9 @@ export function parseWalletAccount(data: Uint8Array): QuipWallet {
  * @throws InvalidAccountDataError if data is malformed
  */
 export function parseFactoryAccount(data: Uint8Array): QuipFactory {
-  if (data.length < FACTORY_SIZE) {
+  if (data.length !== FACTORY_SIZE) {
     throw new InvalidAccountDataError(
-      `Factory data too short: ${data.length} < ${FACTORY_SIZE}`
+      `Factory data size mismatch: expected ${FACTORY_SIZE}, got ${data.length}`
     )
   }
 
