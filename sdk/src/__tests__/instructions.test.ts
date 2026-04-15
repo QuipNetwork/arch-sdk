@@ -28,7 +28,6 @@ import {
   getMockNextWinternitzPublicKey,
   getMockWinternitzSignature,
   getMockUtxoMeta,
-  getMockCpiAccountMeta,
 } from './factories'
 
 describe('instruction builders common properties', () => {
@@ -224,8 +223,9 @@ describe('buildExecuteWithWinternitzInstruction', () => {
     vaultId: TEST_VAULT_ID,
     pqNext: getMockNextWinternitzPublicKey(),
     instructionData: new Uint8Array([1, 2, 3]),
-    accountMetas: [getMockCpiAccountMeta({ isSigner: false, isWritable: true })],
-    remainingAccounts: [TEST_RECIPIENT],
+    cpiAccounts: [
+      { pubkey: TEST_RECIPIENT, isSigner: false, isWritable: true },
+    ],
     signature: getMockWinternitzSignature(),
   }
 
@@ -269,9 +269,23 @@ describe('buildExecuteWithWinternitzInstruction', () => {
     )
   })
 
-  it('remaining accounts are appended', () => {
+  it('remaining accounts are appended with flags passed through', () => {
     const ix = buildExecuteWithWinternitzInstruction(params)
     expect(Array.from(ix.accounts[5].pubkey)).toEqual(Array.from(TEST_RECIPIENT))
+    // Critical: outer tx must mark the account writable so the CPI can write.
+    expect(ix.accounts[5].isWritable).toBe(true)
+    expect(ix.accounts[5].isSigner).toBe(false)
+  })
+
+  it('signer flag on cpiAccount is passed through to outer tx', () => {
+    const ix = buildExecuteWithWinternitzInstruction({
+      ...params,
+      cpiAccounts: [
+        { pubkey: TEST_RECIPIENT, isSigner: true, isWritable: false },
+      ],
+    })
+    expect(ix.accounts[5].isSigner).toBe(true)
+    expect(ix.accounts[5].isWritable).toBe(false)
   })
 
   it('data starts with discriminant = 3', () => {
