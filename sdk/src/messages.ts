@@ -1,6 +1,7 @@
 // Copyright (C) 2025 quip.network
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { SystemInstruction } from '@arch-network/arch-sdk'
 import type { WinternitzPublicKey, CpiAccountMeta, UtxoMeta } from './types'
 
 /**
@@ -12,29 +13,6 @@ function serializeWinternitzPublicKey(key: WinternitzPublicKey): Uint8Array {
   result.set(key.publicSeed, 0)
   result.set(key.publicKeyHash, 32)
   return result
-}
-
-/**
- * Write a u64 as little-endian bytes.
- */
-function writeU64LE(value: bigint): Uint8Array {
-  const bytes = new Uint8Array(8)
-  for (let i = 0; i < 8; i++) {
-    bytes[i] = Number((value >> BigInt(i * 8)) & 0xffn)
-  }
-  return bytes
-}
-
-/**
- * Write a u32 as little-endian bytes.
- */
-function writeU32LE(value: number): Uint8Array {
-  const bytes = new Uint8Array(4)
-  bytes[0] = value & 0xff
-  bytes[1] = (value >> 8) & 0xff
-  bytes[2] = (value >> 16) & 0xff
-  bytes[3] = (value >> 24) & 0xff
-  return bytes
 }
 
 /**
@@ -56,7 +34,7 @@ export function buildTransferMessage(
 ): Uint8Array {
   const currentKeyBytes = serializeWinternitzPublicKey(currentKey)
   const nextKeyBytes = serializeWinternitzPublicKey(nextKey)
-  const amountBytes = writeU64LE(amount)
+  const amountBytes = SystemInstruction.u64ToLeBytes(amount)
 
   const message = new Uint8Array(64 + 64 + 32 + 8)
   let offset = 0
@@ -180,9 +158,9 @@ export function buildBtcTransferMessage(
 ): Uint8Array {
   const currentKeyBytes = serializeWinternitzPublicKey(currentKey)
   const nextKeyBytes = serializeWinternitzPublicKey(nextKey)
-  const scriptLenBytes = writeU32LE(recipientScriptPubkey.length)
-  const amountBytes = writeU64LE(amount)
-  const voutBytes = writeU32LE(sourceUtxo.vout)
+  const scriptLenBytes = SystemInstruction.u32ToLeBytes(recipientScriptPubkey.length)
+  const amountBytes = SystemInstruction.u64ToLeBytes(amount)
+  const voutBytes = SystemInstruction.u32ToLeBytes(sourceUtxo.vout)
 
   // 64 + 64 + 4 + scriptPubkey.length + 8 + 32 + 4
   const totalSize = 64 + 64 + 4 + recipientScriptPubkey.length + 8 + 32 + 4

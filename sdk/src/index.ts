@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * @quip-network/sdk
+ * @quip.network/arch-sdk
  *
  * TypeScript SDK for interacting with quip-arch post-quantum wallets on Arch Network.
  *
@@ -19,7 +19,7 @@
  *   buildTransferMessage,
  *   buildTransferWithWinternitzInstruction,
  *   parseWalletAccount,
- * } from '@quip-network/sdk'
+ * } from '@quip.network/arch-sdk'
  *
  * // Derive wallet address
  * const { address, bump } = deriveWalletAddress(programId, owner, vaultId)
@@ -59,12 +59,9 @@ export type {
 
 // Address derivation (uses @arch-network/arch-sdk PubkeyUtil)
 export {
-  findProgramAddress,
   deriveFactoryAddress,
   deriveWalletAddress,
   createVaultId,
-  fromHex,
-  toHex,
 } from './addresses'
 
 // Message builders (for external signing)
@@ -103,6 +100,18 @@ export type {
 
 // Parsers
 export { parseWalletAccount, parseFactoryAccount } from './parsers'
+
+// Known networks
+export { KNOWN_PROGRAM_IDS, programIdFor } from './constants'
+export type { QuipNetwork } from './constants'
+
+// Key-rotation helpers
+export { pqKeysEqual, assertValidRotation } from './keys'
+
+// High-level client
+export { QuipArchClient } from './client'
+export type { QuipArchClientConfig, ClassicalSigner } from './client'
+export type { ExecuteCpiAccount } from './instructions'
 
 // Errors
 export {

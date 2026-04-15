@@ -1,7 +1,11 @@
 // Copyright (C) 2025 quip.network
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { PubkeyUtil, type Pubkey } from '@arch-network/arch-sdk'
+import {
+  PubkeyUtil,
+  SystemInstruction,
+  type Pubkey,
+} from '@arch-network/arch-sdk'
 
 /**
  * Derive the factory PDA address.
@@ -50,17 +54,7 @@ export function deriveWalletAddress(
  */
 export function createVaultId(id: number | bigint): Uint8Array {
   const vaultId = new Uint8Array(32)
-  const value = BigInt(id)
-
-  // Write as little-endian u64 in first 8 bytes
-  for (let i = 0; i < 8; i++) {
-    vaultId[i] = Number((value >> BigInt(i * 8)) & 0xffn)
-  }
-
+  vaultId.set(SystemInstruction.u64ToLeBytes(BigInt(id)))
   return vaultId
 }
 
-// Re-export PubkeyUtil functions for convenience
-export const findProgramAddress = PubkeyUtil.findProgramAddress
-export const fromHex = PubkeyUtil.fromHex
-export const toHex = PubkeyUtil.toHex

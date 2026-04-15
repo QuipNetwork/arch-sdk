@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { serialize } from 'borsh'
+import { PubkeyUtil } from '@arch-network/arch-sdk'
 import type {
   Instruction,
   AccountMeta,
@@ -23,8 +24,7 @@ import {
   BtcTransferWithWinternitzDataSchema,
 } from './schemas'
 
-/** System program ID (all zeros) */
-const SYSTEM_PROGRAM_ID = new Uint8Array(32)
+const SYSTEM_PROGRAM_ID: Uint8Array = PubkeyUtil.systemProgram()
 
 // =============================================================================
 // InitializeFactory
@@ -165,6 +165,20 @@ export function buildTransferWithWinternitzInstruction(
 // ExecuteWithWinternitz
 // =============================================================================
 
+/**
+ * Account passed through to the inner CPI call.
+ *
+ * The `isSigner` / `isWritable` flags are used both for the CPI's `AccountMeta`
+ * AND for the outer transaction's account list, because ArchVM only loads an
+ * account as writable (or as a signer) at CPI time if the outer instruction
+ * already marked it that way.
+ */
+export interface ExecuteCpiAccount {
+  pubkey: Uint8Array
+  isSigner: boolean
+  isWritable: boolean
+}
+
 export interface ExecuteWithWinternitzParams {
   programId: Uint8Array
   factoryAddress: Uint8Array
@@ -174,8 +188,7 @@ export interface ExecuteWithWinternitzParams {
   vaultId: Uint8Array
   pqNext: WinternitzPublicKey
   instructionData: Uint8Array
-  accountMetas: CpiAccountMeta[]
-  remainingAccounts: Uint8Array[]
+  cpiAccounts: ExecuteCpiAccount[]
   signature: WinternitzSignature
 }
 
@@ -188,17 +201,22 @@ export interface ExecuteWithWinternitzParams {
  * 2. [] Target program
  * 3. [signer, writable] Owner (must be wallet owner)
  * 4. [] System program
- * 5+ [] Remaining accounts for CPI
+ * 5+ [per cpiAccounts flags] Remaining accounts for CPI
  */
 export function buildExecuteWithWinternitzInstruction(
   params: ExecuteWithWinternitzParams
 ): Instruction {
+  const cpiMetas: CpiAccountMeta[] = params.cpiAccounts.map((a) => ({
+    isSigner: a.isSigner,
+    isWritable: a.isWritable,
+  }))
+
   const data = serialize(ExecuteWithWinternitzDataSchema, {
     discriminant: InstructionType.ExecuteWithWinternitz,
     pqNext: params.pqNext,
     vaultId: params.vaultId,
     instructionData: Array.from(params.instructionData),
-    accountMetas: params.accountMetas,
+    accountMetas: cpiMetas,
     signature: params.signature,
   })
 
@@ -208,10 +226,10 @@ export function buildExecuteWithWinternitzInstruction(
     { pubkey: params.targetProgram, isSigner: false, isWritable: false },
     { pubkey: params.owner, isSigner: true, isWritable: true },
     { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-    ...params.remainingAccounts.map((pubkey) => ({
-      pubkey,
-      isSigner: false,
-      isWritable: false,
+    ...params.cpiAccounts.map((a) => ({
+      pubkey: a.pubkey,
+      isSigner: a.isSigner,
+      isWritable: a.isWritable,
     })),
   ]
 
