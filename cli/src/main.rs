@@ -52,6 +52,9 @@ enum Commands {
 
     /// Create a new quip-arch wallet with WOTS+ post-quantum security
     CreateWallet(commands::create_wallet::Args),
+
+    /// Generate a fresh WOTS+ keypair (Rust-compat) as JSON on stdout
+    WotsGen(commands::wots_gen::Args),
 }
 
 fn main() -> Result<()> {
@@ -60,5 +63,6 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Deploy(args) => commands::deploy::run(args),
         Commands::CreateWallet(args) => commands::create_wallet::run(args),
+        Commands::WotsGen(args) => commands::wots_gen::run(args),
     }
 }

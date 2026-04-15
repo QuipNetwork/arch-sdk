@@ -3,3 +3,4 @@
 
 pub mod create_wallet;
 pub mod deploy;
+pub mod wots_gen;
