@@ -3,7 +3,7 @@
   "deployed_at": "2026-03-10T12:00:00Z",
   "program_id_hex": "751bcc7e4b7a69d64f68b22580ef270d9c1134ce7d0ab8aacf569bb4ec09d772",
   "program_id_base58": "8t9HbEkfgYLgDbmPy1nLsQKagoS1mEkTv6Co9fvZcAch",
-  "factory_address_hex": "94b280a86e216d3503d288e78818e2efdb053569fda30c1e9fd6624db77ab59a",
+  "factory_address_hex": "8261467cd1b43eeddb8d873308b38d777d055b58502993cb3ea3ed3d7d0a1dac",
   "factory_address_base58": "9mx2q1tCkAbkQqVb9WzzURiqcCvitwCD7NZuHoaMfgyq",
   "factory_utxo": "e720dfca01370522ae80c4f486dd707ca5fc9dadab5007fc9c3c450ba8169b98:0",
   "factory_btc_address": "tb1pjjtsr22r335ysru63ne8szh3wlks565k0mgcxg05lkvfckcdte6qcgsuvk",
