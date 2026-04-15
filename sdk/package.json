@@ -1,5 +1,5 @@
 {
-  "name": "@quip-network/sdk",
+  "name": "@quip.network/arch-sdk",
   "version": "0.1.0",
   "description": "TypeScript SDK for interacting with quip-arch post-quantum wallets on Arch Network",
   "author": "quip.network",
@@ -19,22 +19,40 @@
     "package.json",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
     "lint": "tsc --noEmit",
     "test": "vitest",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run lint && npm test -- --run && npm run build"
   },
   "peerDependencies": {
-    "@arch-network/arch-sdk": "0.0.26"
+    "@arch-network/arch-sdk": "0.0.26",
+    "@quip.network/hashsigs": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@quip.network/hashsigs": {
+      "optional": true
+    }
   },
   "dependencies": {
     "borsh": "^2.0.0"
   },
   "devDependencies": {
     "@arch-network/arch-sdk": "^0.0.26",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
+    "@scure/base": "^2.0.0",
+    "@scure/btc-signer": "^2.0.1",
     "@types/node": "^22.0.0",
+    "bip322-js": "^3.0.0",
     "tsup": "^8.2.4",
     "typescript": "^5.5.4",
     "vitest": "^2.0.5"
@@ -52,6 +70,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/quip-network/quip-arch"
+    "url": "git+https://github.com/quip-network/quip-arch.git",
+    "directory": "sdk"
   }
 }
