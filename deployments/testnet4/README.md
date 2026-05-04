@@ -1,22 +1,22 @@
 # Testnet4 Deployment
 
-Deployed: 2026-03-10
+Deployed: 2026-05-04
 
 ## Program
 
 | Field | Value |
 |-------|-------|
-| Program ID (base58) | `8t9HbEkfgYLgDbmPy1nLsQKagoS1mEkTv6Co9fvZcAch` |
-| Program ID (hex) | `751bcc7e4b7a69d64f68b22580ef270d9c1134ce7d0ab8aacf569bb4ec09d772` |
+| Program ID (base58) | `BKCgdSMMWfEvVf6okHckp4nwbJniqsa428D7xkbCapNL` |
+| Program ID (hex) | `993e88bbb8e9c6bf39408905230a70a9986413ed84d964bf20b7b402796ebcc9` |
 
 ## Factory
 
 | Field | Value |
 |-------|-------|
-| Address (base58) | `9mx2q1tCkAbkQqVb9WzzURiqcCvitwCD7NZuHoaMfgyq` |
-| Address (hex) | `94b280a86e216d3503d288e78818e2efdb053569fda30c1e9fd6624db77ab59a` |
-| UTXO | `e720dfca01370522ae80c4f486dd707ca5fc9dadab5007fc9c3c450ba8169b98:0` |
-| BTC Address | `tb1pjjtsr22r335ysru63ne8szh3wlks565k0mgcxg05lkvfckcdte6qcgsuvk` |
+| Address (base58) | `9aQjvvgjpnsAwp1f2UJZPkX1NmGFqcuGCNoW5tP6yA4k` |
+| Address (hex) | `7f6c81550c579302c88c1c8521ce56756bdc3753bb5df70fa18019540bdffaad` |
+| UTXO | `43999fb07231e61c4615b8cfcfff592a58bfce8b6a2fd92043fde4bc6f4a71a0:0` |
+| BTC Address | `tb1pwt2tgsztjf2e256wl2aggk0rmlhpef246erjnf96j9737fh38fusv53kmj` |
 
 ## Admin
 
@@ -44,6 +44,6 @@ Deployed: 2026-03-10
 ## Verification
 
 ```bash
-arch-cli show 8t9HbEkfgYLgDbmPy1nLsQKagoS1mEkTv6Co9fvZcAch  # Program
-arch-cli show 9mx2q1tCkAbkQqVb9WzzURiqcCvitwCD7NZuHoaMfgyq  # Factory
+arch-cli show BKCgdSMMWfEvVf6okHckp4nwbJniqsa428D7xkbCapNL  # Program
+arch-cli show 9aQjvvgjpnsAwp1f2UJZPkX1NmGFqcuGCNoW5tP6yA4k  # Factory
 ```

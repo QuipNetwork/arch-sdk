@@ -148,7 +148,7 @@ fn create_config(args: &Args) -> Result<Config> {
     })
 }
 
-fn deploy_program(
+async fn deploy_program(
     config: &Config,
     _client: &ArchRpcClient,
     authority_keypair: UntweakedKeypair,
@@ -169,6 +169,7 @@ fn deploy_program(
             authority_keypair,
             &elf_path_str,
         )
+        .await
         .context("Failed to deploy program")?;
 
     println!("Program deployed successfully!");
@@ -194,7 +195,7 @@ fn parse_manual_utxo(utxo_str: &str) -> Result<UtxoMeta> {
     Ok(UtxoMeta::from(txid_bytes, vout))
 }
 
-fn get_factory_utxo(
+async fn get_factory_utxo(
     helper: &BitcoinHelper,
     keypair: &UntweakedKeypair,
     factory_pubkey: Pubkey,
@@ -212,6 +213,7 @@ fn get_factory_utxo(
         println!("Sending UTXO to factory address (regtest)...");
         let (factory_txid, factory_vout) = helper
             .send_utxo(factory_pubkey)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to send UTXO for factory: {}", e))?;
 
         return Ok(UtxoMeta::from(
@@ -225,7 +227,7 @@ fn get_factory_utxo(
 
     // Testnet/mainnet: use mempool.space API
     println!("Sending UTXO to factory address via mempool.space...");
-    let (txid_hex, vout) = btc_helper::send_utxo(keypair, &factory_pubkey, arch_rpc_url, titan_url, network)?;
+    let (txid_hex, vout) = btc_helper::send_utxo(keypair, &factory_pubkey, arch_rpc_url, titan_url, network).await?;
 
     let txid_bytes: [u8; 32] = hex::decode(&txid_hex)
         .context("Failed to decode txid")?
@@ -237,7 +239,7 @@ fn get_factory_utxo(
     Ok(UtxoMeta::from(txid_bytes, vout))
 }
 
-fn initialize_factory(
+async fn initialize_factory(
     config: &Config,
     client: &ArchRpcClient,
     helper: &BitcoinHelper,
@@ -265,7 +267,7 @@ fn initialize_factory(
         &config.arch_node_url,
         &config.titan_url,
         config.network,
-    )?;
+    ).await?;
 
     let factory_utxo_txid = hex::encode(factory_utxo.txid());
     let factory_utxo_vout = factory_utxo.vout();
@@ -286,6 +288,7 @@ fn initialize_factory(
 
     let recent_blockhash = client
         .get_best_finalized_block_hash()
+        .await
         .context("Failed to get recent blockhash")?;
 
     let tx = build_and_sign_transaction(
@@ -305,10 +308,12 @@ fn initialize_factory(
     println!("Sending InitializeFactory transaction...");
     let txid = client
         .send_transaction(tx)
+        .await
         .context("Failed to send transaction")?;
 
     let processed_tx = client
         .wait_for_processed_transaction(&txid)
+        .await
         .context("Failed to wait for transaction")?;
 
     println!("Transaction status: {:?}", processed_tx.status);
@@ -338,7 +343,7 @@ fn initialize_factory(
     })
 }
 
-pub fn run(args: Args) -> Result<()> {
+pub async fn run(args: Args) -> Result<()> {
     // Handle --print-factory-address: derive and print, then exit
     if let Some(ref pid_hex) = args.print_factory_address {
         let program_pubkey = parse_program_id(pid_hex)?;
@@ -369,7 +374,8 @@ pub fn run(args: Args) -> Result<()> {
     println!();
 
     let client = ArchRpcClient::new(&config);
-    let helper = BitcoinHelper::new(&config);
+    let helper = BitcoinHelper::new(&config)
+        .map_err(|e| anyhow::anyhow!("Failed to create BitcoinHelper: {:?}", e))?;
 
     let program_pubkey = if args.init_only {
         let pid_hex = args.program_id.as_ref()
@@ -390,7 +396,7 @@ pub fn run(args: Args) -> Result<()> {
             &client,
             deployer_keypair.clone(),
             &args.elf_path,
-        )?
+        ).await?
     };
 
     let deployment = initialize_factory(
@@ -403,7 +409,7 @@ pub fn run(args: Args) -> Result<()> {
         args.transfer_fee,
         args.execute_fee,
         args.factory_utxo.as_deref(),
-    )?;
+    ).await?;
 
     let factory_pubkey = deployment.factory_pubkey;
 

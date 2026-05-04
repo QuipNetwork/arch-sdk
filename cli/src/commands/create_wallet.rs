@@ -97,7 +97,7 @@ fn generate_wots_keypair() -> (WinternitzPublicKey, [u8; 32]) {
     (wots_pubkey, private_key)
 }
 
-pub fn run(args: Args) -> Result<()> {
+pub async fn run(args: Args) -> Result<()> {
     // Load deployment.json based on network
     let deployment = load_deployment(&args.network)?;
 
@@ -151,7 +151,7 @@ pub fn run(args: Args) -> Result<()> {
 
     // Step 1: Send UTXO to wallet's Bitcoin address
     println!("Step 1: Sending UTXO to wallet's Bitcoin address...");
-    let (txid, vout) = btc_helper::send_utxo(&keypair, &wallet_pubkey, &arch_rpc_url, &titan_url, network)?;
+    let (txid, vout) = btc_helper::send_utxo(&keypair, &wallet_pubkey, &arch_rpc_url, &titan_url, network).await?;
     println!("UTXO sent: {}:{}", txid, vout);
 
     let wallet_utxo = UtxoMeta::from(
@@ -197,6 +197,7 @@ pub fn run(args: Args) -> Result<()> {
 
     let recent_blockhash = client
         .get_best_finalized_block_hash()
+        .await
         .context("Failed to get recent blockhash")?;
 
     let tx = build_and_sign_transaction(
@@ -215,10 +216,12 @@ pub fn run(args: Args) -> Result<()> {
 
     let arch_txid = client
         .send_transaction(tx)
+        .await
         .context("Failed to send transaction")?;
 
     let processed_tx = client
         .wait_for_processed_transaction(&arch_txid)
+        .await
         .context("Failed to wait for transaction")?;
 
     println!("Transaction status: {:?}", processed_tx.status);

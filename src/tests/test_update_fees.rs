@@ -5,21 +5,21 @@
 
 use super::*;
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_update_fees() {
+async fn test_update_fees() {
     println!("\n=== Test: Update Fees ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
-    ctx.client.create_and_fund_account_with_faucet(&admin_keypair).unwrap();
+    ctx.client.create_and_fund_account_with_faucet(&admin_keypair).await.unwrap();
 
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey, 1000, 500, 750,
-    );
+    ).await;
 
     // Update fees
     let new_creation_fee: u64 = 2000;
@@ -30,63 +30,63 @@ fn test_update_fees() {
         &ctx, program_pubkey, factory_pubkey,
         &admin_keypair, admin_pubkey,
         new_creation_fee, new_transfer_fee, new_execute_fee,
-    );
+    ).await;
     assert!(status == Status::Processed);
 
     // Verify factory state
     verify_factory_state(
         &ctx, factory_pubkey, admin_pubkey.serialize(),
         new_creation_fee, new_transfer_fee, new_execute_fee, 0, 0,
-    );
+    ).await;
 
     println!("\n=== Test PASSED: Update Fees ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_update_fees_unauthorized() {
+async fn test_update_fees_unauthorized() {
     println!("\n=== Test: Update Fees Unauthorized ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
     let (non_admin_keypair, non_admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
-    ctx.client.create_and_fund_account_with_faucet(&non_admin_keypair).unwrap();
+    ctx.client.create_and_fund_account_with_faucet(&non_admin_keypair).await.unwrap();
 
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey, 1000, 500, 750,
-    );
+    ).await;
 
     // Attempt unauthorized fee update
     let status = execute_update_fees(
         &ctx, program_pubkey, factory_pubkey,
         &non_admin_keypair, non_admin_pubkey,
         9999, 9999, 9999,
-    );
+    ).await;
 
     assert_error(&status, QuipError::UnauthorizedSigner);
 
     println!("\n=== Test PASSED: Update Fees Unauthorized ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_update_fees_wrong_factory_pda() {
+async fn test_update_fees_wrong_factory_pda() {
     println!("\n=== Test: Update Fees Wrong Factory PDA ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
-    ctx.client.create_and_fund_account_with_faucet(&admin_keypair).unwrap();
+    ctx.client.create_and_fund_account_with_faucet(&admin_keypair).await.unwrap();
 
     let _factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         1000, 500, 750,
-    );
+    ).await;
 
     // Create wrong/random factory account
     let (_wrong_keypair, wrong_factory_pubkey, _) = generate_new_keypair(ctx.config.network);
@@ -96,30 +96,30 @@ fn test_update_fees_wrong_factory_pda() {
         &ctx, program_pubkey, wrong_factory_pubkey,
         &admin_keypair, admin_pubkey,
         2000, 1000, 1500,
-    );
+    ).await;
 
     assert_error(&status, QuipError::InvalidAccountDerivation);
 
     println!("\n=== Test PASSED: Update Fees Wrong Factory PDA ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_update_fees_admin_not_signer() {
+async fn test_update_fees_admin_not_signer() {
     println!("\n=== Test: Update Fees Admin Not Signer ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
     let (other_keypair, other_pubkey, _) = generate_new_keypair(ctx.config.network);
 
-    ctx.client.create_and_fund_account_with_faucet(&other_keypair).unwrap();
+    ctx.client.create_and_fund_account_with_faucet(&other_keypair).await.unwrap();
 
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         1000, 500, 750,
-    );
+    ).await;
 
     // Attempt update with admin account NOT as signer
     let instruction_data = borsh::to_vec(&QuipInstruction::UpdateFees {
@@ -128,7 +128,7 @@ fn test_update_fees_admin_not_signer() {
         execute_fee: 1500,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -146,22 +146,22 @@ fn test_update_fees_admin_not_signer() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     assert_error(&processed_tx.status, QuipError::UnauthorizedSigner);
 
     println!("\n=== Test PASSED: Update Fees Admin Not Signer ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_update_fees_uninitialized_factory() {
+async fn test_update_fees_uninitialized_factory() {
     println!("\n=== Test: Update Fees Uninitialized Factory ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
 
     // Derive factory PDA but don't initialize it
     let (factory_bytes, _) = derive_factory_address(&program_pubkey);
@@ -172,7 +172,7 @@ fn test_update_fees_uninitialized_factory() {
         &ctx, program_pubkey, factory_pubkey,
         &payer_keypair, payer_pubkey,
         2000, 1000, 1500,
-    );
+    ).await;
 
     // Factory not initialized = invalid account data
     assert_invalid_account_data(&status);

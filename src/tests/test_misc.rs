@@ -5,14 +5,14 @@
 
 use super::*;
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_fake_system_program_rejected() {
+async fn test_fake_system_program_rejected() {
     println!("\n=== Test: Fake System Program Rejected ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
     let (_fake_system_keypair, fake_system_pubkey, _) = generate_new_keypair(ctx.config.network);
 
@@ -20,7 +20,7 @@ fn test_fake_system_program_rejected() {
     let (factory_bytes, _) = derive_factory_address(&program_pubkey);
     let factory_pubkey = Pubkey::from_slice(&factory_bytes);
 
-    let (factory_txid, factory_vout) = ctx.helper.send_utxo(factory_pubkey).unwrap();
+    let (factory_txid, factory_vout) = ctx.helper.send_utxo(factory_pubkey).await.unwrap();
     let factory_utxo = UtxoMeta::from(
         hex::decode(&factory_txid).unwrap().try_into().unwrap(),
         factory_vout,
@@ -35,7 +35,7 @@ fn test_fake_system_program_rejected() {
         factory_utxo,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -54,8 +54,8 @@ fn test_fake_system_program_rejected() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     // The Arch runtime rejects the fake system program before our code runs
     match &processed_tx.status {
@@ -72,19 +72,19 @@ fn test_fake_system_program_rejected() {
     println!("\n=== Test PASSED: Fake System Program Rejected ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_invalid_instruction_data() {
+async fn test_invalid_instruction_data() {
     println!("\n=== Test: Invalid Instruction Data ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
 
     // Send garbage bytes that fail borsh deserialization
     let garbage_data = vec![0xFF, 0xFE, 0xFD, 0xFC, 0xAA, 0xBB];
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -101,8 +101,8 @@ fn test_invalid_instruction_data() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     // Should fail with InvalidInstructionData (borsh deserialization error)
     match &processed_tx.status {

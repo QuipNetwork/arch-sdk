@@ -67,15 +67,16 @@ fn deployer_address(keypair: &UntweakedKeypair, network: Network) -> Address {
 /// Fetch UTXOs for an address from mempool.space.
 /// Prefers confirmed UTXOs, but falls back to unconfirmed if none are available
 /// (allows chaining off unconfirmed change outputs).
-fn fetch_utxos(address: &str, network: Network) -> Result<Vec<Utxo>> {
+async fn fetch_utxos(address: &str, network: Network) -> Result<Vec<Utxo>> {
     let url = format!("{}/address/{}/utxo", mempool_base_url(network), address);
-    let resp = reqwest::blocking::get(&url)
+    let resp = reqwest::get(&url)
+        .await
         .with_context(|| format!("Failed to fetch UTXOs from {}", url))?;
     let utxos: Vec<Utxo> = resp
         .json()
+        .await
         .context("Failed to parse UTXO response")?;
-    let confirmed: Vec<Utxo> = utxos.into_iter().collect::<Vec<_>>();
-    let (conf, unconf): (Vec<_>, Vec<_>) = confirmed.into_iter().partition(|u| u.status.confirmed);
+    let (conf, unconf): (Vec<_>, Vec<_>) = utxos.into_iter().partition(|u| u.status.confirmed);
     if conf.is_empty() {
         println!("No confirmed UTXOs, using unconfirmed");
         Ok(unconf)
@@ -85,7 +86,7 @@ fn fetch_utxos(address: &str, network: Network) -> Result<Vec<Utxo>> {
 }
 
 /// Get an Arch account's Bitcoin address via RPC get_account_address.
-fn get_account_btc_address(arch_rpc_url: &str, pubkey: &Pubkey, network: Network) -> Result<Address> {
+async fn get_account_btc_address(arch_rpc_url: &str, pubkey: &Pubkey, network: Network) -> Result<Address> {
     let config = arch_sdk::Config {
         arch_node_url: arch_rpc_url.to_string(),
         node_endpoint: String::new(),
@@ -97,6 +98,7 @@ fn get_account_btc_address(arch_rpc_url: &str, pubkey: &Pubkey, network: Network
     let client = arch_sdk::ArchRpcClient::new(&config);
     let addr_str = client
         .get_account_address(pubkey)
+        .await
         .map_err(|e| anyhow::anyhow!("get_account_address RPC failed: {:?}", e))?;
     let addr = Address::from_str(&addr_str)
         .context("Failed to parse account BTC address")?
@@ -164,17 +166,18 @@ fn build_and_sign_p2tr_tx(
 }
 
 /// Broadcast a raw transaction via mempool.space POST /api/tx.
-fn broadcast(tx: &Transaction, network: Network) -> Result<String> {
+async fn broadcast(tx: &Transaction, network: Network) -> Result<String> {
     let raw_hex = bitcoin::consensus::encode::serialize_hex(tx);
     let url = format!("{}/tx", mempool_base_url(network));
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::Client::new();
     let resp = client
         .post(&url)
         .body(raw_hex)
         .send()
+        .await
         .context("Failed to broadcast transaction")?;
     let status = resp.status();
-    let body = resp.text().context("Failed to read broadcast response")?;
+    let body = resp.text().await.context("Failed to read broadcast response")?;
     if !status.is_success() {
         anyhow::bail!("Broadcast failed (HTTP {}): {}", status, body);
     }
@@ -182,14 +185,14 @@ fn broadcast(tx: &Transaction, network: Network) -> Result<String> {
 }
 
 /// Poll Titan's `/tx/{txid}` endpoint until indexed (up to 60s).
-fn wait_for_titan(titan_url: &str, txid: &str) -> Result<()> {
+async fn wait_for_titan(titan_url: &str, txid: &str) -> Result<()> {
     let url = format!("{}/tx/{}", titan_url.trim_end_matches('/'), txid);
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::Client::new();
     for elapsed in 0..60 {
         if elapsed > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        match client.get(&url).send() {
+        match client.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             _ => {}
         }
@@ -200,7 +203,7 @@ fn wait_for_titan(titan_url: &str, txid: &str) -> Result<()> {
 /// Fetch the deployer's largest confirmed UTXO, build a P2TR tx sending 3000 sats
 /// to the target Arch account's Bitcoin address, sign, broadcast, wait for Titan
 /// indexing, and return (txid_hex, vout).
-pub fn send_utxo(
+pub async fn send_utxo(
     keypair: &UntweakedKeypair,
     target_pubkey: &Pubkey,
     arch_rpc_url: &str,
@@ -211,10 +214,10 @@ pub fn send_utxo(
     let deployer_addr_str = change_addr.to_string();
     println!("Deployer BTC address: {}", deployer_addr_str);
 
-    let target_addr = get_account_btc_address(arch_rpc_url, target_pubkey, network)?;
+    let target_addr = get_account_btc_address(arch_rpc_url, target_pubkey, network).await?;
     println!("Target BTC address: {}", target_addr);
 
-    let utxos = fetch_utxos(&deployer_addr_str, network)?;
+    let utxos = fetch_utxos(&deployer_addr_str, network).await?;
     let utxo = utxos
         .iter()
         .max_by_key(|u| u.value)
@@ -236,11 +239,11 @@ pub fn send_utxo(
     );
 
     let tx = build_and_sign_p2tr_tx(keypair, utxo, &target_addr, &change_addr)?;
-    let txid = broadcast(&tx, network)?;
+    let txid = broadcast(&tx, network).await?;
     println!("Broadcast txid: {}", txid);
 
     println!("Waiting for Titan to index transaction...");
-    wait_for_titan(titan_url, &txid)?;
+    wait_for_titan(titan_url, &txid).await?;
     println!("Transaction indexed by Titan.");
 
     Ok((txid, 0))

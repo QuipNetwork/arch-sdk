@@ -55,14 +55,23 @@ enum Commands {
 
     /// Generate a fresh WOTS+ keypair (Rust-compat) as JSON on stdout
     WotsGen(commands::wots_gen::Args),
+
+    /// Derive a WOTS+ public key at a given rotation index from a private key
+    WotsDerive(commands::wots_derive::Args),
+
+    /// Sign a message with a WOTS+ private key (keccak256-then-sign)
+    WotsSign(commands::wots_sign::Args),
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Deploy(args) => commands::deploy::run(args),
-        Commands::CreateWallet(args) => commands::create_wallet::run(args),
+        Commands::Deploy(args) => commands::deploy::run(args).await,
+        Commands::CreateWallet(args) => commands::create_wallet::run(args).await,
         Commands::WotsGen(args) => commands::wots_gen::run(args),
+        Commands::WotsDerive(args) => commands::wots_derive::run(args),
+        Commands::WotsSign(args) => commands::wots_sign::run(args),
     }
 }

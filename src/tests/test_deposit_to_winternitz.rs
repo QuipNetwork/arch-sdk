@@ -6,23 +6,23 @@
 use arch_program::rent::minimum_rent;
 use super::*;
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_deposit_to_winternitz_with_deposit() {
+async fn test_deposit_to_winternitz_with_deposit() {
     println!("\n=== Test: DepositToWinternitz With Deposit ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let creation_fee: u64 = 1000;
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey, creation_fee, 500, 750,
-    );
+    ).await;
 
     // Capture factory balance before wallet creation
-    let factory_balance_before = ctx.client.read_account_info(factory_pubkey).unwrap().lamports;
+    let factory_balance_before = ctx.client.read_account_info(factory_pubkey).await.unwrap().lamports;
 
     // Create wallet (owner is the payer)
     let vault_id = [1u8; 32];
@@ -32,13 +32,13 @@ fn test_deposit_to_winternitz_with_deposit() {
     let (wallet_pubkey, _wallet_utxo) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id, &pq_key, initial_deposit,
-    );
+    ).await;
 
     // Verify wallet state
-    verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_key, 0);
+    verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_key, 0).await;
 
     // Verify wallet balance received the initial deposit + rent
-    let wallet_account = ctx.client.read_account_info(wallet_pubkey).unwrap();
+    let wallet_account = ctx.client.read_account_info(wallet_pubkey).await.unwrap();
     let wallet_rent = minimum_rent(QuipWallet::SPACE);
     let expected_wallet_balance = initial_deposit + wallet_rent;
     assert_eq!(
@@ -51,10 +51,10 @@ fn test_deposit_to_winternitz_with_deposit() {
     verify_factory_state(
         &ctx, factory_pubkey, admin_pubkey.serialize(),
         creation_fee, 500, 750, 1, creation_fee,
-    );
+    ).await;
 
     // Verify factory balance increased by exactly creation_fee
-    let factory_balance_after = ctx.client.read_account_info(factory_pubkey).unwrap().lamports;
+    let factory_balance_after = ctx.client.read_account_info(factory_pubkey).await.unwrap().lamports;
     let factory_balance_increase = factory_balance_after - factory_balance_before;
     assert_eq!(
         factory_balance_increase, creation_fee,
@@ -65,19 +65,19 @@ fn test_deposit_to_winternitz_with_deposit() {
     println!("\n=== Test PASSED: DepositToWinternitz With Deposit ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_deposit_to_winternitz_no_deposit() {
+async fn test_deposit_to_winternitz_no_deposit() {
     println!("\n=== Test: DepositToWinternitz No Deposit ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey, 1000, 500, 750,
-    );
+    ).await;
 
     // Create wallet with no deposit (owner is the payer)
     let vault_id = [2u8; 32];
@@ -86,28 +86,28 @@ fn test_deposit_to_winternitz_no_deposit() {
     let (wallet_pubkey, _wallet_utxo) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id, &pq_key, 0, // No deposit
-    );
+    ).await;
 
     // Verify wallet
-    verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_key, 0);
+    verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_key, 0).await;
 
     println!("\n=== Test PASSED: DepositToWinternitz No Deposit ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_deposit_to_winternitz_multiple_wallets_same_owner() {
+async fn test_deposit_to_winternitz_multiple_wallets_same_owner() {
     println!("\n=== Test: DepositToWinternitz Multiple Wallets Same Owner ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let creation_fee: u64 = 1000;
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey, creation_fee, 500, 750,
-    );
+    ).await;
 
     // Create first wallet with vault_id_1 (owner is the payer)
     let vault_id_1 = [1u8; 32];
@@ -117,7 +117,7 @@ fn test_deposit_to_winternitz_multiple_wallets_same_owner() {
     let (wallet_pubkey_1, _wallet_utxo_1) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id_1, &pq_key_1, initial_deposit_1,
-    );
+    ).await;
     println!("Wallet 1 created with deposit {}", initial_deposit_1);
 
     // Create second wallet with vault_id_2 for the same owner
@@ -128,7 +128,7 @@ fn test_deposit_to_winternitz_multiple_wallets_same_owner() {
     let (wallet_pubkey_2, _wallet_utxo_2) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id_2, &pq_key_2, initial_deposit_2,
-    );
+    ).await;
     println!("Wallet 2 created with deposit {}", initial_deposit_2);
 
     // Verify the two wallet PDAs are different
@@ -139,11 +139,11 @@ fn test_deposit_to_winternitz_multiple_wallets_same_owner() {
 
     // Verify both wallets exist and have correct state
     let owner_bytes = payer_pubkey.serialize();
-    verify_wallet_state(&ctx, wallet_pubkey_1, owner_bytes, &pq_key_1, 0);
-    verify_wallet_state(&ctx, wallet_pubkey_2, owner_bytes, &pq_key_2, 0);
+    verify_wallet_state(&ctx, wallet_pubkey_1, owner_bytes, &pq_key_1, 0).await;
+    verify_wallet_state(&ctx, wallet_pubkey_2, owner_bytes, &pq_key_2, 0).await;
 
     let wallet_rent = minimum_rent(QuipWallet::SPACE);
-    let wallet_account_1 = ctx.client.read_account_info(wallet_pubkey_1).unwrap();
+    let wallet_account_1 = ctx.client.read_account_info(wallet_pubkey_1).await.unwrap();
     let expected_balance_1 = initial_deposit_1 + wallet_rent;
     assert_eq!(
         wallet_account_1.lamports, expected_balance_1,
@@ -151,7 +151,7 @@ fn test_deposit_to_winternitz_multiple_wallets_same_owner() {
         wallet_account_1.lamports, initial_deposit_1, wallet_rent
     );
 
-    let wallet_account_2 = ctx.client.read_account_info(wallet_pubkey_2).unwrap();
+    let wallet_account_2 = ctx.client.read_account_info(wallet_pubkey_2).await.unwrap();
     let expected_balance_2 = initial_deposit_2 + wallet_rent;
     assert_eq!(
         wallet_account_2.lamports, expected_balance_2,
@@ -163,24 +163,24 @@ fn test_deposit_to_winternitz_multiple_wallets_same_owner() {
     verify_factory_state(
         &ctx, factory_pubkey, admin_pubkey.serialize(),
         creation_fee, 500, 750, 2, creation_fee * 2,
-    );
+    ).await;
 
     println!("\n=== Test PASSED: DepositToWinternitz Multiple Wallets Same Owner ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_deposit_to_winternitz_wrong_system_program() {
+async fn test_deposit_to_winternitz_wrong_system_program() {
     println!("\n=== Test: DepositToWinternitz Wrong System Program ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey, 1000, 500, 750,
-    );
+    ).await;
 
     // Create a fake system program account
     let (_fake_system_keypair, fake_system_pubkey, _) = generate_new_keypair(ctx.config.network);
@@ -191,7 +191,7 @@ fn test_deposit_to_winternitz_wrong_system_program() {
     let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
     let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
 
-    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wallet_pubkey).unwrap();
+    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wallet_pubkey).await.unwrap();
     let wallet_utxo = UtxoMeta::from(
         hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
         wallet_vout,
@@ -205,7 +205,7 @@ fn test_deposit_to_winternitz_wrong_system_program() {
         wallet_utxo,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -225,8 +225,8 @@ fn test_deposit_to_winternitz_wrong_system_program() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Wrong system program status: {:?}", processed_tx.status);
 
     match &processed_tx.status {
@@ -243,19 +243,19 @@ fn test_deposit_to_winternitz_wrong_system_program() {
     println!("\n=== Test PASSED: DepositToWinternitz Wrong System Program ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_deposit_to_winternitz_owner_not_signer() {
+async fn test_deposit_to_winternitz_owner_not_signer() {
     println!("\n=== Test: DepositToWinternitz Owner Not Signer ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey, 1000, 500, 750,
-    );
+    ).await;
 
     // Create a separate owner account that we won't sign with
     let (_owner_keypair, owner_pubkey, _) = generate_new_keypair(ctx.config.network);
@@ -266,7 +266,7 @@ fn test_deposit_to_winternitz_owner_not_signer() {
     let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
     let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
 
-    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wallet_pubkey).unwrap();
+    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wallet_pubkey).await.unwrap();
     let wallet_utxo = UtxoMeta::from(
         hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
         wallet_vout,
@@ -280,7 +280,7 @@ fn test_deposit_to_winternitz_owner_not_signer() {
         wallet_utxo,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -300,8 +300,8 @@ fn test_deposit_to_winternitz_owner_not_signer() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Owner not signer status: {:?}", processed_tx.status);
 
     assert_error(&processed_tx.status, QuipError::UnauthorizedSigner);
@@ -309,14 +309,14 @@ fn test_deposit_to_winternitz_owner_not_signer() {
     println!("\n=== Test PASSED: DepositToWinternitz Owner Not Signer ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_deposit_to_winternitz_uninitialized_factory() {
+async fn test_deposit_to_winternitz_uninitialized_factory() {
     println!("\n=== Test: DepositToWinternitz Uninitialized Factory ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
 
     // Derive factory PDA but don't initialize it
     let (factory_bytes, _) = derive_factory_address(&program_pubkey);
@@ -328,7 +328,7 @@ fn test_deposit_to_winternitz_uninitialized_factory() {
     let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
     let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
 
-    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wallet_pubkey).unwrap();
+    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wallet_pubkey).await.unwrap();
     let wallet_utxo = UtxoMeta::from(
         hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
         wallet_vout,
@@ -342,7 +342,7 @@ fn test_deposit_to_winternitz_uninitialized_factory() {
         wallet_utxo,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -362,8 +362,8 @@ fn test_deposit_to_winternitz_uninitialized_factory() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Uninitialized factory status: {:?}", processed_tx.status);
 
     // Factory not initialized = invalid account data
@@ -372,20 +372,20 @@ fn test_deposit_to_winternitz_uninitialized_factory() {
     println!("\n=== Test PASSED: DepositToWinternitz Uninitialized Factory ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_deposit_to_winternitz_wrong_factory_pda() {
+async fn test_deposit_to_winternitz_wrong_factory_pda() {
     println!("\n=== Test: DepositToWinternitz Wrong Factory PDA ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     // Initialize the real factory
     let _factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey, 1000, 500, 750,
-    );
+    ).await;
 
     // Create a wrong/random account to use as factory
     let (_wrong_keypair, wrong_factory_pubkey, _) = generate_new_keypair(ctx.config.network);
@@ -396,7 +396,7 @@ fn test_deposit_to_winternitz_wrong_factory_pda() {
     let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
     let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
 
-    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wallet_pubkey).unwrap();
+    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wallet_pubkey).await.unwrap();
     let wallet_utxo = UtxoMeta::from(
         hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
         wallet_vout,
@@ -410,7 +410,7 @@ fn test_deposit_to_winternitz_wrong_factory_pda() {
         wallet_utxo,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -430,8 +430,8 @@ fn test_deposit_to_winternitz_wrong_factory_pda() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Wrong factory PDA status: {:?}", processed_tx.status);
 
     // Wrong factory fails PDA derivation check
@@ -440,19 +440,19 @@ fn test_deposit_to_winternitz_wrong_factory_pda() {
     println!("\n=== Test PASSED: DepositToWinternitz Wrong Factory PDA ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_deposit_to_winternitz_wrong_wallet_pda() {
+async fn test_deposit_to_winternitz_wrong_wallet_pda() {
     println!("\n=== Test: DepositToWinternitz Wrong Wallet PDA ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey, 1000, 500, 750,
-    );
+    ).await;
 
     // Derive wallet with WRONG vault_id, but pass different vault_id in instruction
     let correct_vault_id = [46u8; 32];
@@ -463,7 +463,7 @@ fn test_deposit_to_winternitz_wrong_wallet_pda() {
     let (wrong_wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &wrong_vault_id);
     let wrong_wallet_pubkey = Pubkey::from_slice(&wrong_wallet_bytes);
 
-    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wrong_wallet_pubkey).unwrap();
+    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wrong_wallet_pubkey).await.unwrap();
     let wallet_utxo = UtxoMeta::from(
         hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
         wallet_vout,
@@ -478,7 +478,7 @@ fn test_deposit_to_winternitz_wrong_wallet_pda() {
         wallet_utxo,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -498,8 +498,8 @@ fn test_deposit_to_winternitz_wrong_wallet_pda() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Wrong wallet PDA status: {:?}", processed_tx.status);
 
     assert_error(&processed_tx.status, QuipError::InvalidAccountDerivation);
@@ -507,19 +507,19 @@ fn test_deposit_to_winternitz_wrong_wallet_pda() {
     println!("\n=== Test PASSED: DepositToWinternitz Wrong Wallet PDA ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_deposit_to_winternitz_already_exists() {
+async fn test_deposit_to_winternitz_already_exists() {
     println!("\n=== Test: DepositToWinternitz Already Exists ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey, 1000, 500, 750,
-    );
+    ).await;
 
     // Create wallet first time
     let vault_id = [47u8; 32];
@@ -527,11 +527,11 @@ fn test_deposit_to_winternitz_already_exists() {
     let (wallet_pubkey, _wallet_utxo) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id, &pq_key, 1000,
-    );
+    ).await;
     println!("Wallet created successfully: {:?}", wallet_pubkey);
 
     // Try to create the same wallet again (same vault_id, same owner)
-    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wallet_pubkey).unwrap();
+    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wallet_pubkey).await.unwrap();
     let wallet_utxo = UtxoMeta::from(
         hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
         wallet_vout,
@@ -546,7 +546,7 @@ fn test_deposit_to_winternitz_already_exists() {
         wallet_utxo,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -566,8 +566,8 @@ fn test_deposit_to_winternitz_already_exists() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Double creation status: {:?}", processed_tx.status);
 
     match &processed_tx.status {
@@ -584,14 +584,14 @@ fn test_deposit_to_winternitz_already_exists() {
     println!("\n=== Test PASSED: DepositToWinternitz Already Exists ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_deposit_to_winternitz_insufficient_balance_for_fee() {
+async fn test_deposit_to_winternitz_insufficient_balance_for_fee() {
     println!("\n=== Test: DepositToWinternitz Insufficient Balance For Fee ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     // Set a very high creation fee
@@ -599,11 +599,11 @@ fn test_deposit_to_winternitz_insufficient_balance_for_fee() {
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         high_creation_fee, 500, 750,
-    );
+    ).await;
 
     // Create a new owner with limited funds
     let (poor_owner_keypair, poor_owner_pubkey, _) = generate_new_keypair(ctx.config.network);
-    ctx.client.create_and_fund_account_with_faucet(&poor_owner_keypair).unwrap();
+    ctx.client.create_and_fund_account_with_faucet(&poor_owner_keypair).await.unwrap();
 
     // Derive wallet PDA
     let vault_id = [38u8; 32];
@@ -611,7 +611,7 @@ fn test_deposit_to_winternitz_insufficient_balance_for_fee() {
     let (wallet_bytes, _) = derive_wallet_address(&program_pubkey, &owner_bytes, &vault_id);
     let wallet_pubkey = Pubkey::from_slice(&wallet_bytes);
 
-    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wallet_pubkey).unwrap();
+    let (wallet_txid, wallet_vout) = ctx.helper.send_utxo(wallet_pubkey).await.unwrap();
     let wallet_utxo = UtxoMeta::from(
         hex::decode(&wallet_txid).unwrap().try_into().unwrap(),
         wallet_vout,
@@ -625,7 +625,7 @@ fn test_deposit_to_winternitz_insufficient_balance_for_fee() {
         wallet_utxo,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -645,8 +645,8 @@ fn test_deposit_to_winternitz_insufficient_balance_for_fee() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     // Should fail because owner can't afford the creation fee
     // The pre-check with check_sufficient_balance returns InsufficientWalletBalance

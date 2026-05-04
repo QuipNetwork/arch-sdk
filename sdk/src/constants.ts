@@ -11,7 +11,7 @@ import { SystemInstruction } from '@arch-network/arch-sdk'
  * `QuipArchClient`.
  */
 export const KNOWN_PROGRAM_IDS = {
-  testnet: '751bcc7e4b7a69d64f68b22580ef270d9c1134ce7d0ab8aacf569bb4ec09d772',
+  testnet: '993e88bbb8e9c6bf39408905230a70a9986413ed84d964bf20b7b402796ebcc9',
 } as const satisfies Record<string, string>
 
 export type QuipNetwork = keyof typeof KNOWN_PROGRAM_IDS

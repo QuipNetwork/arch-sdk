@@ -6,7 +6,7 @@
 use super::*;
 
 /// Helper function to execute an ExecuteWithWinternitz instruction
-fn execute_with_winternitz(
+async fn execute_with_winternitz(
     ctx: &TestContext,
     program_pubkey: Pubkey,
     factory_pubkey: Pubkey,
@@ -59,7 +59,7 @@ fn execute_with_winternitz(
     ];
     accounts.extend(remaining_accounts);
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -77,20 +77,20 @@ fn execute_with_winternitz(
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("ExecuteWithWinternitz status: {:?}", processed_tx.status);
     processed_tx.status
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_execute_with_winternitz_success() {
+async fn test_execute_with_winternitz_success() {
     println!("\n=== Test: ExecuteWithWinternitz Success ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let creation_fee: u64 = 1000;
@@ -100,7 +100,7 @@ fn test_execute_with_winternitz_success() {
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         creation_fee, transfer_fee, execute_fee,
-    );
+    ).await;
 
     // Create wallet with deposit to cover execute fee
     let vault_id = [42u8; 32];
@@ -111,14 +111,14 @@ fn test_execute_with_winternitz_success() {
     let (wallet_pubkey, _wallet_utxo) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id, &pq_key, initial_deposit,
-    );
+    ).await;
 
     // Create a recipient account that will receive lamports via the CPI
     let (recipient_keypair, recipient_pubkey, _) = generate_new_keypair(ctx.config.network);
-    ctx.client.create_and_fund_account_with_faucet(&recipient_keypair).unwrap();
+    ctx.client.create_and_fund_account_with_faucet(&recipient_keypair).await.unwrap();
 
     // Capture balances before execute
-    let balances_before = capture_balances(&ctx, &[factory_pubkey, wallet_pubkey, recipient_pubkey]);
+    let balances_before = capture_balances(&ctx, &[factory_pubkey, wallet_pubkey, recipient_pubkey]).await;
 
     // Execute a CPI: system transfer from owner (payer) to recipient
     // The owner is a signer in the transaction, so it can authorize this transfer
@@ -152,12 +152,12 @@ fn test_execute_with_winternitz_success() {
         transfer_ix.data.clone(), // system transfer instruction data
         cpi_account_metas,
         remaining_accounts,
-    );
+    ).await;
 
     assert_eq!(status, Status::Processed, "ExecuteWithWinternitz should succeed");
 
     // Verify balances changed correctly
-    let balances_after = capture_balances(&ctx, &[factory_pubkey, wallet_pubkey, recipient_pubkey]);
+    let balances_after = capture_balances(&ctx, &[factory_pubkey, wallet_pubkey, recipient_pubkey]).await;
 
     // Factory should have gained execute_fee
     let factory_gain = balances_after[0] - balances_before[0];
@@ -171,7 +171,7 @@ fn test_execute_with_winternitz_success() {
     assert_eq!(recipient_gain, cpi_transfer_amount, "Recipient should gain CPI transfer amount");
 
     // Verify wallet state (WOTS+ key rotated, transaction count incremented)
-    verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_next, 1);
+    verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_next, 1).await;
 
     // Verify factory accumulated fees
     verify_factory_state(
@@ -179,25 +179,25 @@ fn test_execute_with_winternitz_success() {
         creation_fee, transfer_fee, execute_fee,
         1, // total_wallets
         creation_fee + execute_fee, // accumulated_fees
-    );
+    ).await;
 
     println!("\n=== Test PASSED: ExecuteWithWinternitz Success ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_execute_with_winternitz_owner_not_signer() {
+async fn test_execute_with_winternitz_owner_not_signer() {
     println!("\n=== Test: ExecuteWithWinternitz Owner Not Signer ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         1000, 500, 750,
-    );
+    ).await;
 
     // Create wallet
     let vault_id = [43u8; 32];
@@ -207,11 +207,11 @@ fn test_execute_with_winternitz_owner_not_signer() {
     let (wallet_pubkey, _wallet_utxo) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id, &pq_key, 10_000,
-    );
+    ).await;
 
     // Create a different signer (attacker) who will sign but is not the owner
     let (attacker_keypair, attacker_pubkey, _) = generate_new_keypair(ctx.config.network);
-    ctx.client.create_and_fund_account_with_faucet(&attacker_keypair).unwrap();
+    ctx.client.create_and_fund_account_with_faucet(&attacker_keypair).await.unwrap();
 
     // Build message with owner's pubkey but sign with attacker
     let target_bytes = system_program::SYSTEM_PROGRAM_ID.serialize();
@@ -236,7 +236,7 @@ fn test_execute_with_winternitz_owner_not_signer() {
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
     // Use attacker as signer but they're not the wallet owner
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -260,8 +260,8 @@ fn test_execute_with_winternitz_owner_not_signer() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     // Should fail because attacker's pubkey doesn't derive the wallet PDA
     assert_error(&processed_tx.status, QuipError::InvalidAccountDerivation);
@@ -269,14 +269,14 @@ fn test_execute_with_winternitz_owner_not_signer() {
     println!("\n=== Test PASSED: ExecuteWithWinternitz Owner Not Signer ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_execute_with_winternitz_uninitialized_factory() {
+async fn test_execute_with_winternitz_uninitialized_factory() {
     println!("\n=== Test: ExecuteWithWinternitz Uninitialized Factory ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
 
     // Derive factory address but don't initialize it
     let (factory_bytes, _) = derive_factory_address(&program_pubkey);
@@ -313,7 +313,7 @@ fn test_execute_with_winternitz_uninitialized_factory() {
 
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -337,8 +337,8 @@ fn test_execute_with_winternitz_uninitialized_factory() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     // Should fail because factory is not initialized = invalid account data
     assert_invalid_account_data(&processed_tx.status);
@@ -346,21 +346,21 @@ fn test_execute_with_winternitz_uninitialized_factory() {
     println!("\n=== Test PASSED: ExecuteWithWinternitz Uninitialized Factory ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_execute_with_winternitz_uninitialized_wallet() {
+async fn test_execute_with_winternitz_uninitialized_wallet() {
     println!("\n=== Test: ExecuteWithWinternitz Uninitialized Wallet ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     // Initialize factory but don't create wallet
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         1000, 500, 750,
-    );
+    ).await;
 
     // Derive wallet address but don't create it
     let vault_id = [45u8; 32];
@@ -393,7 +393,7 @@ fn test_execute_with_winternitz_uninitialized_wallet() {
 
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -417,8 +417,8 @@ fn test_execute_with_winternitz_uninitialized_wallet() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     // Should fail because wallet is not created = invalid account data
     assert_invalid_account_data(&processed_tx.status);
@@ -426,21 +426,21 @@ fn test_execute_with_winternitz_uninitialized_wallet() {
     println!("\n=== Test PASSED: ExecuteWithWinternitz Uninitialized Wallet ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_execute_with_winternitz_wrong_factory_pda() {
+async fn test_execute_with_winternitz_wrong_factory_pda() {
     println!("\n=== Test: ExecuteWithWinternitz Wrong Factory PDA ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     // Initialize factory
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         1000, 500, 750,
-    );
+    ).await;
 
     // Create wallet
     let vault_id = [46u8; 32];
@@ -450,7 +450,7 @@ fn test_execute_with_winternitz_wrong_factory_pda() {
     let (wallet_pubkey, _wallet_utxo) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id, &pq_key, 10_000,
-    );
+    ).await;
 
     // Create a fake factory account (random address)
     let (_fake_factory_keypair, fake_factory_pubkey, _) = generate_new_keypair(ctx.config.network);
@@ -477,7 +477,7 @@ fn test_execute_with_winternitz_wrong_factory_pda() {
 
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -502,8 +502,8 @@ fn test_execute_with_winternitz_wrong_factory_pda() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     // Should fail because fake factory fails PDA derivation check
     assert_error(&processed_tx.status, QuipError::InvalidAccountDerivation);
@@ -511,21 +511,21 @@ fn test_execute_with_winternitz_wrong_factory_pda() {
     println!("\n=== Test PASSED: ExecuteWithWinternitz Wrong Factory PDA ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_execute_with_winternitz_wrong_wallet_pda() {
+async fn test_execute_with_winternitz_wrong_wallet_pda() {
     println!("\n=== Test: ExecuteWithWinternitz Wrong Wallet PDA ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     // Initialize factory
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         1000, 500, 750,
-    );
+    ).await;
 
     // Create wallet with vault_id_1
     let vault_id_1 = [47u8; 32];
@@ -535,7 +535,7 @@ fn test_execute_with_winternitz_wrong_wallet_pda() {
     let (wallet_pubkey, _wallet_utxo) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id_1, &pq_key, 10_000,
-    );
+    ).await;
 
     // Use a different vault_id in the instruction
     let wrong_vault_id = [48u8; 32];
@@ -562,7 +562,7 @@ fn test_execute_with_winternitz_wrong_wallet_pda() {
 
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -586,8 +586,8 @@ fn test_execute_with_winternitz_wrong_wallet_pda() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     // Should fail because wallet PDA doesn't match with wrong_vault_id
     assert_error(&processed_tx.status, QuipError::InvalidAccountDerivation);
@@ -600,7 +600,7 @@ fn test_execute_with_winternitz_wrong_wallet_pda() {
 // =============================================================================
 
 /// Create a token mint account
-fn create_token_mint(
+async fn create_token_mint(
     ctx: &TestContext,
     mint_keypair: &UntweakedKeypair,
     mint_pubkey: Pubkey,
@@ -609,7 +609,7 @@ fn create_token_mint(
     decimals: u8,
 ) {
     // Send UTXO to mint account
-    let (mint_txid, mint_vout) = ctx.helper.send_utxo(mint_pubkey).unwrap();
+    let (mint_txid, mint_vout) = ctx.helper.send_utxo(mint_pubkey).await.unwrap();
 
     // Create mint account with anchor
     let create_mint_ix = system_instruction::create_account_with_anchor(
@@ -622,7 +622,7 @@ fn create_token_mint(
         mint_vout,
     );
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[create_mint_ix],
@@ -633,8 +633,8 @@ fn create_token_mint(
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     assert_eq!(processed_tx.status, Status::Processed, "Create mint account failed");
 
     // Initialize mint
@@ -646,7 +646,7 @@ fn create_token_mint(
         decimals,
     ).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[init_mint_ix],
@@ -657,15 +657,15 @@ fn create_token_mint(
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     assert_eq!(processed_tx.status, Status::Processed, "Initialize mint failed");
 
     println!("Token mint created: {:?}", mint_pubkey);
 }
 
 /// Create an Associated Token Account (ATA)
-fn create_ata(
+async fn create_ata(
     ctx: &TestContext,
     funder_keypair: &UntweakedKeypair,
     funder_pubkey: Pubkey,
@@ -679,7 +679,7 @@ fn create_ata(
     );
 
     // Send UTXO to ATA
-    let (ata_txid, ata_vout) = ctx.helper.send_utxo(ata_pubkey).unwrap();
+    let (ata_txid, ata_vout) = ctx.helper.send_utxo(ata_pubkey).await.unwrap();
 
     // Build ATA creation instruction data (txid + vout)
     let mut data = Vec::with_capacity(36);
@@ -695,7 +695,7 @@ fn create_ata(
         AccountMeta::new(apl_token::id(), false),
     ];
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -710,8 +710,8 @@ fn create_ata(
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     assert_eq!(processed_tx.status, Status::Processed, "Create ATA failed");
 
     println!("ATA created for wallet {:?}: {:?}", wallet_pubkey, ata_pubkey);
@@ -719,7 +719,7 @@ fn create_ata(
 }
 
 /// Mint tokens to an ATA
-fn mint_tokens(
+async fn mint_tokens(
     ctx: &TestContext,
     mint_pubkey: Pubkey,
     dest_ata: Pubkey,
@@ -736,7 +736,7 @@ fn mint_tokens(
         amount,
     ).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[mint_to_ix],
@@ -747,12 +747,12 @@ fn mint_tokens(
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     assert_eq!(processed_tx.status, Status::Processed, "Mint tokens failed");
 
     // Verify balance
-    let ata_info = ctx.client.read_account_info(dest_ata).unwrap();
+    let ata_info = ctx.client.read_account_info(dest_ata).await.unwrap();
     let token_account = apl_token::state::Account::unpack(&ata_info.data).unwrap();
     assert_eq!(token_account.amount, amount, "Token balance mismatch after mint");
 
@@ -760,19 +760,19 @@ fn mint_tokens(
 }
 
 /// Get token balance for an ATA
-fn get_token_balance(ctx: &TestContext, ata_pubkey: Pubkey) -> u64 {
-    let ata_info = ctx.client.read_account_info(ata_pubkey).unwrap();
+async fn get_token_balance(ctx: &TestContext, ata_pubkey: Pubkey) -> u64 {
+    let ata_info = ctx.client.read_account_info(ata_pubkey).await.unwrap();
     apl_token::state::Account::unpack(&ata_info.data).unwrap().amount
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_execute_with_winternitz_apl_token_transfer() {
+async fn test_execute_with_winternitz_apl_token_transfer() {
     println!("\n=== Test: ExecuteWithWinternitz APL Token Transfer ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let creation_fee: u64 = 1000;
@@ -782,7 +782,7 @@ fn test_execute_with_winternitz_apl_token_transfer() {
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         creation_fee, transfer_fee, execute_fee,
-    );
+    ).await;
 
     // Create wallet with deposit to cover execute fee
     let vault_id = [99u8; 32];
@@ -793,7 +793,7 @@ fn test_execute_with_winternitz_apl_token_transfer() {
     let (wallet_pubkey, _wallet_utxo) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id, &pq_key, initial_deposit,
-    );
+    ).await;
 
     // Create token mint (payer is mint authority)
     let (mint_keypair, mint_pubkey, _) = generate_new_keypair(ctx.config.network);
@@ -804,7 +804,7 @@ fn test_execute_with_winternitz_apl_token_transfer() {
         payer_pubkey,
         &payer_keypair,
         9, // decimals
-    );
+    ).await;
 
     // Create ATA for wallet PDA (source of token transfer)
     // The wallet PDA will be the authority for this ATA
@@ -814,18 +814,18 @@ fn test_execute_with_winternitz_apl_token_transfer() {
         payer_pubkey,
         wallet_pubkey, // owner of the ATA is the wallet PDA
         mint_pubkey,
-    );
+    ).await;
 
     // Create ATA for recipient
     let (recipient_keypair, recipient_pubkey, _) = generate_new_keypair(ctx.config.network);
-    ctx.client.create_and_fund_account_with_faucet(&recipient_keypair).unwrap();
+    ctx.client.create_and_fund_account_with_faucet(&recipient_keypair).await.unwrap();
     let recipient_ata = create_ata(
         &ctx,
         &payer_keypair,
         payer_pubkey,
         recipient_pubkey,
         mint_pubkey,
-    );
+    ).await;
 
     // Mint tokens to wallet's ATA
     let mint_amount: u64 = 1_000_000_000; // 1 token with 9 decimals
@@ -836,14 +836,14 @@ fn test_execute_with_winternitz_apl_token_transfer() {
         &payer_keypair,
         payer_pubkey,
         mint_amount,
-    );
+    ).await;
 
     // Verify initial balances
-    assert_eq!(get_token_balance(&ctx, wallet_ata), mint_amount);
-    assert_eq!(get_token_balance(&ctx, recipient_ata), 0);
+    assert_eq!(get_token_balance(&ctx, wallet_ata).await, mint_amount);
+    assert_eq!(get_token_balance(&ctx, recipient_ata).await, 0);
 
     // Capture lamport balances before execute (owner pays execute fee)
-    let lamport_balances_before = capture_balances(&ctx, &[factory_pubkey, wallet_pubkey]);
+    let lamport_balances_before = capture_balances(&ctx, &[factory_pubkey, wallet_pubkey]).await;
 
     // Build the token transfer CPI instruction
     // The wallet PDA will sign this transfer as the authority
@@ -889,13 +889,13 @@ fn test_execute_with_winternitz_apl_token_transfer() {
         transfer_ix.data.clone(),
         cpi_account_metas,
         remaining_accounts,
-    );
+    ).await;
 
     assert_eq!(status, Status::Processed, "APL token transfer via ExecuteWithWinternitz should succeed");
 
     // Verify token balances changed correctly
-    let wallet_token_balance = get_token_balance(&ctx, wallet_ata);
-    let recipient_token_balance = get_token_balance(&ctx, recipient_ata);
+    let wallet_token_balance = get_token_balance(&ctx, wallet_ata).await;
+    let recipient_token_balance = get_token_balance(&ctx, recipient_ata).await;
 
     assert_eq!(
         wallet_token_balance,
@@ -911,7 +911,7 @@ fn test_execute_with_winternitz_apl_token_transfer() {
     );
 
     // Verify lamport balances changed correctly (owner pays execute fee)
-    let lamport_balances_after = capture_balances(&ctx, &[factory_pubkey, wallet_pubkey]);
+    let lamport_balances_after = capture_balances(&ctx, &[factory_pubkey, wallet_pubkey]).await;
 
     let factory_gain = lamport_balances_after[0] - lamport_balances_before[0];
     assert_eq!(factory_gain, execute_fee, "Factory should gain execute_fee");
@@ -920,25 +920,25 @@ fn test_execute_with_winternitz_apl_token_transfer() {
     assert_eq!(lamport_balances_after[1], lamport_balances_before[1], "Wallet balance should be unchanged");
 
     // Verify wallet state (WOTS+ key rotated, transaction count incremented)
-    verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_next, 1);
+    verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_next, 1).await;
 
     println!("\n=== Test PASSED: ExecuteWithWinternitz APL Token Transfer ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_execute_with_winternitz_invalid_signature() {
+async fn test_execute_with_winternitz_invalid_signature() {
     println!("\n=== Test: ExecuteWithWinternitz Invalid Signature ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         1000, 500, 750,
-    );
+    ).await;
 
     // Create wallet
     let vault_id = [50u8; 32];
@@ -948,7 +948,7 @@ fn test_execute_with_winternitz_invalid_signature() {
     let (wallet_pubkey, _wallet_utxo) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id, &pq_key, 10_000,
-    );
+    ).await;
 
     // Build instruction with INVALID signature (random data)
     let invalid_signature = vec![0xFFu8; 2112];
@@ -963,7 +963,7 @@ fn test_execute_with_winternitz_invalid_signature() {
 
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -987,28 +987,28 @@ fn test_execute_with_winternitz_invalid_signature() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     assert_error(&processed_tx.status, QuipError::InvalidWotsSignature);
 
     println!("\n=== Test PASSED: ExecuteWithWinternitz Invalid Signature ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_execute_with_winternitz_account_metas_mismatch() {
+async fn test_execute_with_winternitz_account_metas_mismatch() {
     println!("\n=== Test: ExecuteWithWinternitz Account Metas Mismatch ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         1000, 500, 750,
-    );
+    ).await;
 
     // Create wallet
     let vault_id = [51u8; 32];
@@ -1018,7 +1018,7 @@ fn test_execute_with_winternitz_account_metas_mismatch() {
     let (wallet_pubkey, _wallet_utxo) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id, &pq_key, 10_000,
-    );
+    ).await;
 
     // Build signature with 2 account_metas but only 1 remaining account
     let target_bytes = system_program::SYSTEM_PROGRAM_ID.serialize();
@@ -1049,7 +1049,7 @@ fn test_execute_with_winternitz_account_metas_mismatch() {
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
     // Pass only 1 remaining account but 2 account_metas
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -1075,28 +1075,28 @@ fn test_execute_with_winternitz_account_metas_mismatch() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     assert_error(&processed_tx.status, QuipError::AccountMetasMismatch);
 
     println!("\n=== Test PASSED: ExecuteWithWinternitz Account Metas Mismatch ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_execute_with_winternitz_wrong_system_program() {
+async fn test_execute_with_winternitz_wrong_system_program() {
     println!("\n=== Test: ExecuteWithWinternitz Wrong System Program ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         1000, 500, 750,
-    );
+    ).await;
 
     // Create wallet
     let vault_id = [52u8; 32];
@@ -1106,7 +1106,7 @@ fn test_execute_with_winternitz_wrong_system_program() {
     let (wallet_pubkey, _wallet_utxo) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id, &pq_key, 10_000,
-    );
+    ).await;
 
     // Create fake system program
     let (_fake_system_keypair, fake_system_pubkey, _) = generate_new_keypair(ctx.config.network);
@@ -1133,7 +1133,7 @@ fn test_execute_with_winternitz_wrong_system_program() {
 
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -1157,8 +1157,8 @@ fn test_execute_with_winternitz_wrong_system_program() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     // Should fail because wrong system program is passed for fee transfer
     match &processed_tx.status {
@@ -1175,14 +1175,14 @@ fn test_execute_with_winternitz_wrong_system_program() {
     println!("\n=== Test PASSED: ExecuteWithWinternitz Wrong System Program ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_execute_with_winternitz_insufficient_fee() {
+async fn test_execute_with_winternitz_insufficient_fee() {
     println!("\n=== Test: ExecuteWithWinternitz Insufficient Fee ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     // Set a very high execute fee
@@ -1190,7 +1190,7 @@ fn test_execute_with_winternitz_insufficient_fee() {
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey,
         1000, 500, high_execute_fee,
-    );
+    ).await;
 
     // Create wallet with small deposit
     let vault_id = [39u8; 32];
@@ -1200,11 +1200,11 @@ fn test_execute_with_winternitz_insufficient_fee() {
     let (wallet_pubkey, _wallet_utxo) = create_wallet(
         &ctx, program_pubkey, factory_pubkey, &payer_keypair, payer_pubkey,
         vault_id, &pq_key, 10_000,
-    );
+    ).await;
 
     // Create a poor owner who can't afford execute fee
     let (poor_owner_keypair, _poor_owner_pubkey, _) = generate_new_keypair(ctx.config.network);
-    ctx.client.create_and_fund_account_with_faucet(&poor_owner_keypair).unwrap();
+    ctx.client.create_and_fund_account_with_faucet(&poor_owner_keypair).await.unwrap();
 
     // Build signature
     let target_bytes = system_program::SYSTEM_PROGRAM_ID.serialize();
@@ -1239,7 +1239,7 @@ fn test_execute_with_winternitz_insufficient_fee() {
     // so let's just verify the fee amount is set correctly and proceed.
     // In a real scenario, the owner would be drained of funds.
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -1263,8 +1263,8 @@ fn test_execute_with_winternitz_insufficient_fee() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
 
     // Should fail because owner can't afford the execute fee
     // The pre-check with check_sufficient_balance returns InsufficientWalletBalance

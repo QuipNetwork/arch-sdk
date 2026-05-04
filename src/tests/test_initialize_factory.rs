@@ -5,14 +5,14 @@
 
 use super::*;
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_initialize_factory() {
+async fn test_initialize_factory() {
     println!("\n=== Test: Initialize Factory ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     let creation_fee: u64 = 1000;
@@ -28,7 +28,7 @@ fn test_initialize_factory() {
         creation_fee,
         transfer_fee,
         execute_fee,
-    );
+    ).await;
 
     verify_factory_state(
         &ctx,
@@ -39,29 +39,29 @@ fn test_initialize_factory() {
         execute_fee,
         0, // total_wallets
         0, // accumulated_fees
-    );
+    ).await;
 
     println!("\n=== Test PASSED: Initialize Factory ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_initialize_factory_already_initialized() {
+async fn test_initialize_factory_already_initialized() {
     println!("\n=== Test: Initialize Factory Already Initialized ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     // First initialization
     let factory_pubkey = initialize_factory(
         &ctx, program_pubkey, &payer_keypair, payer_pubkey, admin_pubkey, 1000, 500, 750,
-    );
+    ).await;
     println!("First initialization successful");
 
     // Second initialization (should fail)
-    let (factory_txid2, factory_vout2) = ctx.helper.send_utxo(factory_pubkey).unwrap();
+    let (factory_txid2, factory_vout2) = ctx.helper.send_utxo(factory_pubkey).await.unwrap();
     let factory_utxo2 = UtxoMeta::from(
         hex::decode(&factory_txid2).unwrap().try_into().unwrap(),
         factory_vout2,
@@ -75,7 +75,7 @@ fn test_initialize_factory_already_initialized() {
         factory_utxo: factory_utxo2,
     }).unwrap();
 
-    let recent_blockhash2 = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash2 = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx2 = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -94,8 +94,8 @@ fn test_initialize_factory_already_initialized() {
         ctx.config.network,
     ).unwrap();
 
-    let txid2 = ctx.client.send_transaction(tx2).unwrap();
-    let processed_tx2 = ctx.client.wait_for_processed_transaction(&txid2).unwrap();
+    let txid2 = ctx.client.send_transaction(tx2).await.unwrap();
+    let processed_tx2 = ctx.client.wait_for_processed_transaction(&txid2).await.unwrap();
     println!("Second initialization status: {:?}", processed_tx2.status);
 
     // Double-init prevention is enforced by system program rejecting create_account
@@ -114,20 +114,20 @@ fn test_initialize_factory_already_initialized() {
     println!("\n=== Test PASSED: Initialize Factory Already Initialized ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_initialize_factory_wrong_pda() {
+async fn test_initialize_factory_wrong_pda() {
     println!("\n=== Test: Initialize Factory Wrong PDA ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     // Create a random account instead of the derived factory PDA
     let (_wrong_keypair, wrong_pubkey, _) = generate_new_keypair(ctx.config.network);
 
-    let (factory_txid, factory_vout) = ctx.helper.send_utxo(wrong_pubkey).unwrap();
+    let (factory_txid, factory_vout) = ctx.helper.send_utxo(wrong_pubkey).await.unwrap();
     let factory_utxo = UtxoMeta::from(
         hex::decode(&factory_txid).unwrap().try_into().unwrap(),
         factory_vout,
@@ -141,7 +141,7 @@ fn test_initialize_factory_wrong_pda() {
         factory_utxo,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -160,8 +160,8 @@ fn test_initialize_factory_wrong_pda() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Wrong PDA initialization status: {:?}", processed_tx.status);
 
     assert_error(&processed_tx.status, QuipError::InvalidAccountDerivation);
@@ -169,14 +169,14 @@ fn test_initialize_factory_wrong_pda() {
     println!("\n=== Test PASSED: Initialize Factory Wrong PDA ===\n");
 }
 
-#[test]
+#[tokio::test]
 #[serial]
 #[ignore]
-fn test_initialize_factory_wrong_system_program() {
+async fn test_initialize_factory_wrong_system_program() {
     println!("\n=== Test: Initialize Factory Wrong System Program ===\n");
 
     let ctx = TestContext::new();
-    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx);
+    let (program_pubkey, payer_keypair, payer_pubkey) = deploy_program(&ctx).await;
     let (_admin_keypair, admin_pubkey, _) = generate_new_keypair(ctx.config.network);
 
     // Create a fake system program account
@@ -186,7 +186,7 @@ fn test_initialize_factory_wrong_system_program() {
     let (factory_bytes, _) = derive_factory_address(&program_pubkey);
     let factory_pubkey = Pubkey::from_slice(&factory_bytes);
 
-    let (factory_txid, factory_vout) = ctx.helper.send_utxo(factory_pubkey).unwrap();
+    let (factory_txid, factory_vout) = ctx.helper.send_utxo(factory_pubkey).await.unwrap();
     let factory_utxo = UtxoMeta::from(
         hex::decode(&factory_txid).unwrap().try_into().unwrap(),
         factory_vout,
@@ -200,7 +200,7 @@ fn test_initialize_factory_wrong_system_program() {
         factory_utxo,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -219,8 +219,8 @@ fn test_initialize_factory_wrong_system_program() {
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Wrong system program status: {:?}", processed_tx.status);
 
     match &processed_tx.status {

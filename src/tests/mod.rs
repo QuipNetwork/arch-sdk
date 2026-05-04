@@ -139,8 +139,8 @@ pub fn sign_message(private_key: &[u8; 32], message: &[u8]) -> Vec<u8> {
 /// `arch_sdk::prepare_fees()` sends a Bitcoin transaction but does not wait
 /// for Titan to index it. This wrapper deserializes the fee tx, extracts the
 /// funding txid, and polls Titan until the transaction is indexed.
-pub fn prepare_fees_and_wait(helper: &BitcoinHelper) -> Vec<u8> {
-    let fee_tx_hex = arch_sdk::prepare_fees();
+pub async fn prepare_fees_and_wait(helper: &BitcoinHelper) -> Vec<u8> {
+    let fee_tx_hex = arch_sdk::prepare_fees().await.unwrap();
     let fee_tx = hex::decode(&fee_tx_hex).unwrap();
 
     // Deserialize to extract the funding UTXO txid
@@ -148,7 +148,7 @@ pub fn prepare_fees_and_wait(helper: &BitcoinHelper) -> Vec<u8> {
         arch_program::bitcoin::consensus::deserialize(&fee_tx).unwrap();
     let fee_funding_txid = fee_btc_tx.input[0].previous_output.txid;
     println!("Waiting for Titan to index fee UTXO: {}", fee_funding_txid);
-    helper.wait_until_titan_indexes_transaction(&fee_funding_txid).unwrap();
+    helper.wait_until_titan_indexes_transaction(&fee_funding_txid).await.unwrap();
     println!("Fee UTXO indexed by Titan");
 
     fee_tx
@@ -170,18 +170,20 @@ impl TestContext {
         let mut config = Config::localnet();
         config.titan_url = "http://127.0.0.1:8080".to_string();
         let client = ArchRpcClient::new(&config);
-        let helper = BitcoinHelper::new(&config);
+        let helper = BitcoinHelper::new(&config)
+            .expect("Failed to create BitcoinHelper");
         Self { config, client, helper }
     }
 }
 
 /// Deploy the quip-arch program and return (program_pubkey, payer_keypair, payer_pubkey)
-pub fn deploy_program(ctx: &TestContext) -> (Pubkey, UntweakedKeypair, Pubkey) {
+pub async fn deploy_program(ctx: &TestContext) -> (Pubkey, UntweakedKeypair, Pubkey) {
     let (authority_keypair, _, _) = generate_new_keypair(ctx.config.network);
     let (program_keypair, _, _) = generate_new_keypair(ctx.config.network);
 
     ctx.client
         .create_and_fund_account_with_faucet(&authority_keypair)
+        .await
         .expect("Failed to fund authority");
 
     let deployer = ProgramDeployer::new(&ctx.config);
@@ -192,6 +194,7 @@ pub fn deploy_program(ctx: &TestContext) -> (Pubkey, UntweakedKeypair, Pubkey) {
             authority_keypair,
             &ELF_PATH.to_string(),
         )
+        .await
         .expect("Failed to deploy program");
 
     println!("Program deployed: {:?}", program_pubkey);
@@ -200,13 +203,14 @@ pub fn deploy_program(ctx: &TestContext) -> (Pubkey, UntweakedKeypair, Pubkey) {
     let (payer_keypair, payer_pubkey, _) = generate_new_keypair(ctx.config.network);
     ctx.client
         .create_and_fund_account_with_faucet(&payer_keypair)
+        .await
         .expect("Failed to fund payer");
 
     (program_pubkey, payer_keypair, payer_pubkey)
 }
 
 /// Initialize factory and return factory pubkey
-pub fn initialize_factory(
+pub async fn initialize_factory(
     ctx: &TestContext,
     program_pubkey: Pubkey,
     payer_keypair: &UntweakedKeypair,
@@ -222,6 +226,7 @@ pub fn initialize_factory(
 
     let (factory_txid, factory_vout) = ctx.helper
         .send_utxo(factory_pubkey)
+        .await
         .expect("Failed to send UTXO for factory");
 
     let factory_utxo = UtxoMeta::from(
@@ -243,7 +248,7 @@ pub fn initialize_factory(
         AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
     ];
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -258,9 +263,10 @@ pub fn initialize_factory(
         ctx.config.network,
     ).expect("Failed to build transaction");
 
-    let txid = ctx.client.send_transaction(tx).expect("Failed to send transaction");
+    let txid = ctx.client.send_transaction(tx).await.expect("Failed to send transaction");
     let processed_tx = ctx.client
         .wait_for_processed_transaction(&txid)
+        .await
         .expect("Failed to wait for transaction");
 
     assert!(
@@ -276,7 +282,7 @@ pub fn initialize_factory(
 /// Create a wallet with WOTS+ key
 /// Create a wallet where the owner pays for creation and deposit.
 /// Returns (wallet_pubkey, wallet_anchor_utxo)
-pub fn create_wallet(
+pub async fn create_wallet(
     ctx: &TestContext,
     program_pubkey: Pubkey,
     factory_pubkey: Pubkey,
@@ -293,6 +299,7 @@ pub fn create_wallet(
 
     let (wallet_txid, wallet_vout) = ctx.helper
         .send_utxo(wallet_pubkey)
+        .await
         .expect("Failed to send UTXO for wallet");
 
     let wallet_utxo = UtxoMeta::from(
@@ -314,7 +321,7 @@ pub fn create_wallet(
         AccountMeta { pubkey: system_program::SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
     ];
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -329,9 +336,10 @@ pub fn create_wallet(
         ctx.config.network,
     ).expect("Failed to build transaction");
 
-    let txid = ctx.client.send_transaction(tx).expect("Failed to send transaction");
+    let txid = ctx.client.send_transaction(tx).await.expect("Failed to send transaction");
     let processed_tx = ctx.client
         .wait_for_processed_transaction(&txid)
+        .await
         .expect("Failed to wait for transaction");
 
     assert!(
@@ -345,7 +353,7 @@ pub fn create_wallet(
 }
 
 /// Verify factory state
-pub fn verify_factory_state(
+pub async fn verify_factory_state(
     ctx: &TestContext,
     factory_pubkey: Pubkey,
     expected_admin: [u8; 32],
@@ -357,6 +365,7 @@ pub fn verify_factory_state(
 ) {
     let factory_account = ctx.client
         .read_account_info(factory_pubkey)
+        .await
         .expect("Failed to read factory account");
 
     let factory = QuipFactory::try_from_slice(&factory_account.data)
@@ -371,7 +380,7 @@ pub fn verify_factory_state(
 }
 
 /// Verify wallet state
-pub fn verify_wallet_state(
+pub async fn verify_wallet_state(
     ctx: &TestContext,
     wallet_pubkey: Pubkey,
     expected_owner: [u8; 32],
@@ -380,6 +389,7 @@ pub fn verify_wallet_state(
 ) {
     let wallet_account = ctx.client
         .read_account_info(wallet_pubkey)
+        .await
         .expect("Failed to read wallet account");
 
     let wallet = QuipWallet::try_from_slice(&wallet_account.data)
@@ -396,33 +406,37 @@ pub fn verify_wallet_state(
 }
 
 /// Capture balances for multiple accounts
-pub fn capture_balances(ctx: &TestContext, accounts: &[Pubkey]) -> Vec<u64> {
-    accounts.iter().map(|pubkey| {
-        ctx.client.read_account_info(*pubkey).unwrap().lamports
-    }).collect()
+pub async fn capture_balances(ctx: &TestContext, accounts: &[Pubkey]) -> Vec<u64> {
+    let mut balances = Vec::with_capacity(accounts.len());
+    for pubkey in accounts {
+        balances.push(
+            ctx.client.read_account_info(*pubkey).await.unwrap().lamports
+        );
+    }
+    balances
 }
 
 /// Anchor an account to a Bitcoin UTXO
-pub fn anchor_account(ctx: &TestContext, account_keypair: &UntweakedKeypair, account_pubkey: Pubkey) {
-    let (txid, vout) = ctx.helper.send_utxo(account_pubkey).unwrap();
+pub async fn anchor_account(ctx: &TestContext, account_keypair: &UntweakedKeypair, account_pubkey: Pubkey) {
+    let (txid, vout) = ctx.helper.send_utxo(account_pubkey).await.unwrap();
     let anchor_ix = system_instruction::anchor(
         &account_pubkey,
         hex::decode(&txid).unwrap().try_into().unwrap(),
         vout,
     );
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(&[anchor_ix], Some(account_pubkey), recent_blockhash),
         vec![account_keypair.clone()],
         ctx.config.network,
     ).unwrap();
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Account anchored: {:?}", account_pubkey);
 }
 
 /// Execute a transfer with Winternitz signature
-pub fn execute_transfer(
+pub async fn execute_transfer(
     ctx: &TestContext,
     program_pubkey: Pubkey,
     factory_pubkey: Pubkey,
@@ -449,7 +463,7 @@ pub fn execute_transfer(
 
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -472,14 +486,14 @@ pub fn execute_transfer(
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Transfer status: {:?}", processed_tx.status);
     processed_tx.status
 }
 
 /// Execute a change PQ owner operation
-pub fn execute_change_pq_owner(
+pub async fn execute_change_pq_owner(
     ctx: &TestContext,
     program_pubkey: Pubkey,
     wallet_pubkey: Pubkey,
@@ -501,7 +515,7 @@ pub fn execute_change_pq_owner(
 
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(WOTS_COMPUTE_BUDGET);
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -522,14 +536,14 @@ pub fn execute_change_pq_owner(
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Change PQ owner status: {:?}", processed_tx.status);
     processed_tx.status
 }
 
 /// Execute a BTC transfer instruction (raw, without anchoring - caller must anchor first)
-pub fn execute_btc_transfer_raw(
+pub async fn execute_btc_transfer_raw(
     ctx: &TestContext,
     program_pubkey: Pubkey,
     factory_pubkey: Pubkey,
@@ -560,7 +574,7 @@ pub fn execute_btc_transfer_raw(
 
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(BTC_TRANSFER_COMPUTE_BUDGET);
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[
@@ -583,8 +597,8 @@ pub fn execute_btc_transfer_raw(
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("BTC transfer status: {:?}", processed_tx.status);
     (processed_tx.status, processed_tx.bitcoin_txid)
 }
@@ -628,7 +642,7 @@ pub fn assert_invalid_account_data(status: &Status) {
 
 
 /// Execute a withdraw fees operation
-pub fn execute_withdraw_fees(
+pub async fn execute_withdraw_fees(
     ctx: &TestContext,
     program_pubkey: Pubkey,
     factory_pubkey: Pubkey,
@@ -641,7 +655,7 @@ pub fn execute_withdraw_fees(
         amount,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -660,14 +674,14 @@ pub fn execute_withdraw_fees(
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Withdraw fees status: {:?}", processed_tx.status);
     processed_tx.status
 }
 
 /// Execute an update fees operation
-pub fn execute_update_fees(
+pub async fn execute_update_fees(
     ctx: &TestContext,
     program_pubkey: Pubkey,
     factory_pubkey: Pubkey,
@@ -683,7 +697,7 @@ pub fn execute_update_fees(
         execute_fee,
     }).unwrap();
 
-    let recent_blockhash = ctx.client.get_best_finalized_block_hash().unwrap();
+    let recent_blockhash = ctx.client.get_best_finalized_block_hash().await.unwrap();
     let tx = build_and_sign_transaction(
         ArchMessage::new(
             &[Instruction {
@@ -701,8 +715,8 @@ pub fn execute_update_fees(
         ctx.config.network,
     ).unwrap();
 
-    let txid = ctx.client.send_transaction(tx).unwrap();
-    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).unwrap();
+    let txid = ctx.client.send_transaction(tx).await.unwrap();
+    let processed_tx = ctx.client.wait_for_processed_transaction(&txid).await.unwrap();
     println!("Update fees status: {:?}", processed_tx.status);
     processed_tx.status
 }
