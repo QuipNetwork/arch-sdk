@@ -10,3 +10,4 @@ keys/
 # SDK build artifacts
 sdk/node_modules/
 sdk/dist/
+.program
