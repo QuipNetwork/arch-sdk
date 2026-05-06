@@ -454,7 +454,7 @@ async function ensureWalletCreated(ctx: Ctx, state: SmokeState): Promise<void> {
         owner: ctx.bip322,
         vaultId: ctx.vaultId,
         pqOwner: { publicSeed: pqCurrent.publicSeed, publicKeyHash: pqCurrent.publicKeyHash },
-        deposit: 0n,
+        deposit: 10_000n, // wallet pays factory.transfer_fee out of its own balance
         walletUtxo: anchorUtxo,
       })
     )
