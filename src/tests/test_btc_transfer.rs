@@ -63,9 +63,9 @@ async fn test_btc_transfer_partial_spend() {
     let factory_balance_increase = factory_balance_after - factory_balance_before;
     let owner_balance_decrease = owner_balance_before - owner_balance_after;
 
-    assert_eq!(wallet_balance_decrease, 0, "Wallet balance should be unchanged");
+    assert_eq!(wallet_balance_decrease, transfer_fee, "Wallet should have paid exactly transfer_fee");
     assert_eq!(factory_balance_increase, transfer_fee, "Factory should have received exactly transfer_fee");
-    assert!(owner_balance_decrease >= transfer_fee, "Owner should have paid transfer_fee + Arch tx fees");
+    let _ = owner_balance_decrease; // owner pays only Arch validator fees, not transfer_fee
 
     // Verify factory accumulated_fees
     let factory_account = ctx.client.read_account_info(factory_pubkey).await.unwrap();
@@ -134,14 +134,14 @@ async fn test_btc_transfer_full_spend() {
 
     assert!(status == Status::Processed, "BTC max-spend tx should succeed");
 
-    // Verify lamport fee was collected from owner
+    // Verify lamport fee was collected from wallet (not owner)
     let wallet_balance_after = ctx.client.read_account_info(wallet_pubkey).await.unwrap().lamports;
     let factory_balance_after = ctx.client.read_account_info(factory_pubkey).await.unwrap().lamports;
     let owner_balance_after = ctx.client.read_account_info(payer_pubkey).await.unwrap().lamports;
 
-    assert_eq!(wallet_balance_before - wallet_balance_after, 0, "Wallet balance should be unchanged");
+    assert_eq!(wallet_balance_before - wallet_balance_after, transfer_fee, "Wallet should have paid exactly transfer_fee");
     assert_eq!(factory_balance_after - factory_balance_before, transfer_fee);
-    assert!(owner_balance_before - owner_balance_after >= transfer_fee, "Owner should have paid transfer_fee + Arch tx fees");
+    let _ = owner_balance_before - owner_balance_after; // owner pays only Arch validator fees, not transfer_fee
 
     // Check Bitcoin transaction acceptance
     if let Some(ref btc_txid_hash) = bitcoin_txid {
@@ -428,15 +428,15 @@ async fn test_btc_transfer_non_anchor_utxo_full_spend() {
 
     assert!(status == Status::Processed, "Non-anchor full spend should succeed");
 
-    // Verify lamport fee was collected from owner
+    // Verify lamport fee was collected from wallet (not owner)
     let wallet_balance_after = ctx.client.read_account_info(wallet_pubkey).await.unwrap().lamports;
     let factory_balance_after = ctx.client.read_account_info(factory_pubkey).await.unwrap().lamports;
     let owner_balance_after = ctx.client.read_account_info(payer_pubkey).await.unwrap().lamports;
 
     // Verify lamport fees
-    assert_eq!(wallet_balance_before - wallet_balance_after, 0, "Wallet balance should be unchanged");
+    assert_eq!(wallet_balance_before - wallet_balance_after, transfer_fee, "Wallet should have paid exactly transfer_fee");
     assert_eq!(factory_balance_after - factory_balance_before, transfer_fee);
-    assert!(owner_balance_before - owner_balance_after >= transfer_fee, "Owner should have paid transfer_fee + Arch tx fees");
+    let _ = owner_balance_before - owner_balance_after; // owner pays only Arch validator fees, not transfer_fee
 
     // Verify wallet state updated
     verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_next, 1).await;
@@ -520,14 +520,14 @@ async fn test_btc_transfer_non_anchor_utxo_with_change() {
 
     assert!(status == Status::Processed, "Non-anchor with change should succeed");
 
-    // Verify lamport fee was collected from owner
+    // Verify lamport fee was collected from wallet (not owner)
     let wallet_balance_after = ctx.client.read_account_info(wallet_pubkey).await.unwrap().lamports;
     let factory_balance_after = ctx.client.read_account_info(factory_pubkey).await.unwrap().lamports;
     let owner_balance_after = ctx.client.read_account_info(payer_pubkey).await.unwrap().lamports;
 
-    assert_eq!(wallet_balance_before - wallet_balance_after, 0, "Wallet balance should be unchanged");
+    assert_eq!(wallet_balance_before - wallet_balance_after, transfer_fee, "Wallet should have paid exactly transfer_fee");
     assert_eq!(factory_balance_after - factory_balance_before, transfer_fee);
-    assert!(owner_balance_before - owner_balance_after >= transfer_fee, "Owner should have paid transfer_fee + Arch tx fees");
+    let _ = owner_balance_before - owner_balance_after; // owner pays only Arch validator fees, not transfer_fee
 
     // Verify wallet state updated
     verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_next, 1).await;

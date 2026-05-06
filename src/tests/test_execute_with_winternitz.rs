@@ -163,8 +163,12 @@ async fn test_execute_with_winternitz_success() {
     let factory_gain = balances_after[0] - balances_before[0];
     assert_eq!(factory_gain, execute_fee, "Factory should gain execute_fee");
 
-    // Wallet balance should be unchanged (owner pays the fee now)
-    assert_eq!(balances_after[1], balances_before[1], "Wallet balance should be unchanged");
+    // Wallet balance should have decreased by exactly execute_fee
+    assert_eq!(
+        balances_before[1] - balances_after[1],
+        execute_fee,
+        "Wallet should have paid exactly execute_fee"
+    );
 
     // Recipient should have gained the CPI transfer amount
     let recipient_gain = balances_after[2] - balances_before[2];
@@ -842,7 +846,7 @@ async fn test_execute_with_winternitz_apl_token_transfer() {
     assert_eq!(get_token_balance(&ctx, wallet_ata).await, mint_amount);
     assert_eq!(get_token_balance(&ctx, recipient_ata).await, 0);
 
-    // Capture lamport balances before execute (owner pays execute fee)
+    // Capture lamport balances before execute (wallet pays execute fee)
     let lamport_balances_before = capture_balances(&ctx, &[factory_pubkey, wallet_pubkey]).await;
 
     // Build the token transfer CPI instruction
@@ -910,14 +914,18 @@ async fn test_execute_with_winternitz_apl_token_transfer() {
         token_transfer_amount
     );
 
-    // Verify lamport balances changed correctly (owner pays execute fee)
+    // Verify lamport balances changed correctly (wallet pays execute fee)
     let lamport_balances_after = capture_balances(&ctx, &[factory_pubkey, wallet_pubkey]).await;
 
     let factory_gain = lamport_balances_after[0] - lamport_balances_before[0];
     assert_eq!(factory_gain, execute_fee, "Factory should gain execute_fee");
 
-    // Wallet balance should be unchanged (owner pays the fee now)
-    assert_eq!(lamport_balances_after[1], lamport_balances_before[1], "Wallet balance should be unchanged");
+    // Wallet balance should have decreased by exactly execute_fee
+    assert_eq!(
+        lamport_balances_before[1] - lamport_balances_after[1],
+        execute_fee,
+        "Wallet should have paid exactly execute_fee"
+    );
 
     // Verify wallet state (WOTS+ key rotated, transaction count incremented)
     verify_wallet_state(&ctx, wallet_pubkey, payer_pubkey.serialize(), &pq_next, 1).await;

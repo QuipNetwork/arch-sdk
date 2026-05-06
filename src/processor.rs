@@ -415,8 +415,8 @@ fn process_execute_with_winternitz<'a>(
     let mut factory: QuipFactory = load_state(factory_info)?;
     let mut wallet: QuipWallet = load_state(wallet_info)?;
 
-    // Pre-check owner balance for execute fee (owner pays, not wallet)
-    crate::utils::check_sufficient_balance(owner_info, factory.execute_fee)?;
+    // Pre-check wallet balance for execute fee (wallet pays, not owner)
+    crate::utils::check_sufficient_balance(wallet_info, factory.execute_fee)?;
 
     // Collect remaining accounts for CPI
     let remaining_accounts: Vec<&AccountInfo> = account_info_iter.collect();
@@ -448,19 +448,12 @@ fn process_execute_with_winternitz<'a>(
     let wallet_owner = wallet.owner;
     let wallet_bump = wallet.bump;
 
-    // Transfer execute fee from owner to factory
-    crate::utils::transfer_value_from_signer(owner_info, factory_info, factory.execute_fee)?;
-
-    // Update factory fees
-    factory.accumulate_fee(factory.execute_fee);
-
-    // Update wallet state
+    // Update wallet state (data only — lamports untouched). Safe to do before
+    // the CPI because invoke_signed below doesn't include wallet_info, so the
+    // borrow released by save_state doesn't conflict.
     wallet.rotate_key(pq_next);
     wallet.increment_transaction_count();
     wallet.last_activity = get_bitcoin_block_height() as i64;
-
-    // Serialize updated states
-    save_state(&factory, factory_info)?;
     save_state(&wallet, wallet_info)?;
 
     // Build wallet PDA seeds for signing (uses copied values)
@@ -489,12 +482,24 @@ fn process_execute_with_winternitz<'a>(
     };
 
     // Execute CPI using ArchVM's invoke_signed mechanism
-    // The wallet PDA must sign for this CPI (using wallet_seeds defined above)
+    // The wallet PDA must sign for this CPI (using wallet_seeds defined above).
+    //
+    // IMPORTANT: the wallet→factory fee transfer happens AFTER this CPI, not
+    // before. Direct lamport manipulation (transfer_value uses
+    // try_borrow_mut_lamports) followed by invoke_signed in the same
+    // instruction trips Arch's lamport-conservation check ("sum of account
+    // balances before and after instruction do not match"). Doing the debit
+    // post-CPI keeps the runtime's per-instruction balance bookkeeping clean.
     let cpi_account_infos: Vec<AccountInfo> = remaining_accounts
         .iter()
         .map(|a| (*a).clone())
         .collect();
     invoke_signed(&cpi_instruction, &cpi_account_infos, &[wallet_seeds])?;
+
+    // Post-CPI: transfer execute fee from wallet to factory and update factory state.
+    crate::utils::transfer_value(wallet_info, factory_info, factory.execute_fee)?;
+    factory.accumulate_fee(factory.execute_fee);
+    save_state(&factory, factory_info)?;
 
     msg!(
         "Execute CPI to {} with vault_id: {}",
@@ -688,9 +693,12 @@ fn process_btc_transfer_with_winternitz<'a>(
     let account_info_iter = &mut accounts.iter();
     let factory_info = next_account_info(account_info_iter)?;
     let wallet_info = next_account_info(account_info_iter)?;
-    // The owner is also the Arch tx fee payer. Since fee payers are implicitly
-    // writable in Arch, the owner must be anchored to a UTXO and included in
-    // the BTC transaction. Signed via sign_input + invoke (system-owned).
+    // The owner is the Arch tx fee payer (writable). Even though the wallet PDA
+    // pays the factory fee (not the owner), the Arch runtime requires every
+    // writable, anchored account in the Arch tx to appear as a spent input in
+    // the BTC tx assembled via set_transaction_to_sign. So the owner's anchor
+    // UTXO is consumed and reissued (pass-through), signed via sign_input +
+    // invoke (system-owned).
     let owner_info = next_account_info(account_info_iter)?;
     let system_program_info = next_account_info(account_info_iter)?;
 
@@ -707,8 +715,8 @@ fn process_btc_transfer_with_winternitz<'a>(
     let mut factory: QuipFactory = load_state(factory_info)?;
     let mut wallet: QuipWallet = load_state(wallet_info)?;
 
-    // Pre-check owner lamport balance for transfer fee (owner pays, not wallet)
-    crate::utils::check_sufficient_balance(owner_info, factory.transfer_fee)?;
+    // Pre-check wallet lamport balance for transfer fee (wallet pays, not owner)
+    crate::utils::check_sufficient_balance(wallet_info, factory.transfer_fee)?;
 
     // Validate inputs
     if amount == 0 {
@@ -772,7 +780,7 @@ fn process_btc_transfer_with_winternitz<'a>(
 
     // Charge lamport transfer fee from owner to factory.
     // Owner is a system-owned signer, so we use the system program transfer.
-    crate::utils::transfer_value_from_signer(owner_info, factory_info, factory.transfer_fee)?;
+    crate::utils::transfer_value(wallet_info, factory_info, factory.transfer_fee)?;
 
     // Update factory accumulated fees
     factory.accumulate_fee(factory.transfer_fee);
@@ -818,6 +826,11 @@ fn process_btc_transfer_with_winternitz<'a>(
     //   Input 3            : non-anchor UTXO (fully consumed)
     //   Input 4            : fee input (unsigned)
     //   Output 3           : recipient (no change output)
+    //
+    // The wallet PDA pays factory.transfer_fee (not the owner). The owner
+    // appears in the BTC tx because Arch's runtime requires every writable,
+    // anchored account in the Arch tx to be spent in the BTC tx — its anchor
+    // UTXO is reissued at the same value/address (pass-through).
 
     let wallet_script_bytes = get_account_script_pubkey(wallet_info.key);
     let wallet_script = ScriptBuf::from_bytes(wallet_script_bytes.to_vec());
@@ -870,7 +883,9 @@ fn process_btc_transfer_with_winternitz<'a>(
     // Input 1 + Output 1: factory state transition (pass-through)
     add_state_transition(&mut btc_tx, factory_info)?;
 
-    // Input 2 + Output 2: owner pass-through (signed via sign_input)
+    // Input 2 + Output 2: owner pass-through (signed via sign_input).
+    // Required by Arch runtime: writable, anchored accounts in the Arch tx
+    // must appear as spent inputs in the BTC tx.
     let owner_utxo_value = get_bitcoin_tx_output_value(
         owner_info.utxo.txid_big_endian(),
         owner_info.utxo.vout(),
